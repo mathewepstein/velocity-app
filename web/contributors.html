@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Velocity — Contributors</title>
+  <link rel="stylesheet" href="/dashboard.css" />
+</head>
+<body class="{{if .Incognito}}incognito{{end}}">
+  {{template "nav" .}}
+
+  <div class="container">
+    <header class="page">
+      <div>
+        <h1>Contributors</h1>
+        <div class="sub" id="contrib-summary">Loading…</div>
+      </div>
+    </header>
+
+    <section class="panel">
+      <h2>All mapped devs <span class="meta" id="contrib-meta"></span></h2>
+      <div class="team-controls contrib-controls">
+        <span class="control-label">Window</span>
+        <div class="control-group" id="contrib-range" role="tablist" aria-label="Scoring window">
+          <button data-range="3m" class="active">3M</button>
+          <button data-range="6m">6M</button>
+          <button data-range="12m">12M</button>
+          <button data-range="ytd">YTD</button>
+          <button data-range="all">All</button>
+        </div>
+      </div>
+      <div class="contrib-table" role="table" aria-label="Contributors">
+        <div class="contrib-row contrib-head" role="row">
+          <div role="columnheader" data-sort="name">Dev</div>
+          <div role="columnheader" class="num" data-sort="rating">Rating</div>
+          <div role="columnheader" class="num" data-sort="composite">Composite</div>
+          <div role="columnheader" class="num" data-sort="code_impact">code_impact</div>
+          <div role="columnheader" class="num" data-sort="prs_merged">PRs merged</div>
+          <div role="columnheader" class="num" data-sort="prs_reviewed">Reviews</div>
+          <div role="columnheader" class="num" data-sort="jira_resolved">Jira resolved</div>
+          <div role="columnheader" class="num" data-sort="active_weeks">Active weeks</div>
+        </div>
+        <div id="contrib-body"></div>
+      </div>
+    </section>
+
+    <footer>
+      <span id="footer-generated"></span>
+    </footer>
+  </div>
+
+  <div class="loading" id="loading">Loading metrics…</div>
+  <div class="error" id="error" hidden>
+    Could not load <code>/metrics.json</code>. Run
+    <code>velocity refresh</code> then <code>velocity analyze</code>.
+  </div>
+
+  <script src="/util.js" defer></script>
+  <script src="/contributors.js" defer></script>
+</body>
+</html>

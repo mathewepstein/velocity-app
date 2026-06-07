@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Velocity — Macro flow</title>
+  <link rel="stylesheet" href="/dashboard.css" />
+</head>
+<body class="{{if .Incognito}}incognito{{end}}">
+  {{template "nav" .}}
+
+  <div class="container">
+    <header class="page">
+      <div>
+        <h1>Velocity</h1>
+        <div class="sub" id="vel-summary">Loading…</div>
+      </div>
+    </header>
+
+    <!-- Macro highlight tiles -->
+    <section class="stats" id="vel-highlights"></section>
+
+    <!-- Team flow panel -->
+    <section class="panel team-panel">
+      <div class="team-head">
+        <h2 style="margin:0;">Team flow <span class="meta" id="flow-meta"></span></h2>
+        <div class="team-controls">
+          <div class="control-group" id="flow-range" role="tablist" aria-label="Range">
+            <button data-range="6m">6M</button>
+            <button data-range="12m" class="active">12M</button>
+            <button data-range="24m">24M</button>
+            <button data-range="all">All</button>
+          </div>
+          <label class="compare-control">
+            <span class="control-label">Compare</span>
+            <select id="flow-compare" aria-label="Compare to a prior period">
+              <option value="none">None</option>
+              <option value="prev">Previous period</option>
+              <option value="yoy">Same period last year</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <p class="panel-hint">Whole-team throughput and cycle time per month. Click a card to chart its trend. No single "velocity number" by design.</p>
+      <div class="stats" id="flow-stats"></div>
+      <div class="chart-wrap">
+        <svg id="flow-chart" viewBox="0 0 1200 280" preserveAspectRatio="none"></svg>
+        <div class="tooltip" id="flow-tooltip"></div>
+      </div>
+      <div class="chart-legend" id="flow-legend"></div>
+    </section>
+
+    <!-- Claude attribution -->
+    <section class="panel">
+      <h2 style="margin:0 0 4px;">What Claude is doing for our velocity <span class="meta" id="claude-meta"></span></h2>
+      <p class="panel-hint">Share of resolved tickets carrying a <code>CLAUDE_GEN</code> label, and how Claude-assisted tickets compare on cycle time. Diagnostic only — never part of any score.</p>
+      <div class="stats" id="claude-stats"></div>
+      <div class="chart-wrap">
+        <svg id="claude-chart" viewBox="0 0 1200 280" preserveAspectRatio="none"></svg>
+        <div class="tooltip" id="claude-tooltip"></div>
+      </div>
+      <div class="chart-legend" id="claude-legend"></div>
+    </section>
+
+    <!-- Initiatives / momentum (relocated from home) -->
+    <section class="panel">
+      <h2 style="margin:0;">Initiatives — by momentum <span class="meta" id="surge-meta"></span></h2>
+      <p class="panel-hint">Epics ranked by recent activity vs their own trailing baseline — what's heating up or cooling off right now (independent of the flow range above).</p>
+      <div class="projects-header" style="margin-top:8px;">
+        <button class="projects-toggle" id="surge-rising-only" aria-pressed="false">Rising &amp; hot only</button>
+      </div>
+      <div class="projects" id="surge-projects"></div>
+    </section>
+
+    <footer>
+      <span id="footer-generated"></span>
+      <span id="footer-history"></span>
+    </footer>
+  </div>
+
+  <div class="loading" id="loading">Loading metrics…</div>
+  <div class="error" id="error" hidden>
+    Could not load <code>/metrics.json</code>. Run
+    <code>velocity refresh</code> then <code>velocity analyze</code>.
+  </div>
+
+  <script src="/util.js" defer></script>
+  <script src="/charts.js" defer></script>
+  <script src="/velocity.js" defer></script>
+</body>
+</html>

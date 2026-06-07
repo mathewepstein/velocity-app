@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Velocity — Leaderboard</title>
+  <link rel="stylesheet" href="/dashboard.css" />
+</head>
+<body class="{{if .Incognito}}incognito{{end}}">
+  {{template "nav" .}}
+
+  <div class="container">
+    <header class="page">
+      <div>
+        <h1>Leaderboard</h1>
+        <div class="sub" id="lb-summary">Loading…</div>
+      </div>
+    </header>
+
+    <!-- Top section: leaderboard + side chart -->
+    <section class="lb-top">
+      <div class="lb-table-col panel">
+        <h2>
+          Bi-weekly Elo + composite score
+          <span class="meta" id="lb-meta"></span>
+        </h2>
+        <div class="lb-table" role="table" aria-label="Leaderboard">
+          <div class="lb-row lb-head lb-row-compact" role="row">
+            <div role="columnheader">#</div>
+            <div role="columnheader">Dev</div>
+            <div role="columnheader" class="num">Rating</div>
+            <div role="columnheader" class="num">Score</div>
+          </div>
+          <div id="lb-body"></div>
+        </div>
+      </div>
+
+      <div class="lb-aside panel">
+        <div class="aside-head">
+          <h2 style="margin:0;">Top 10 — rating over time</h2>
+        </div>
+        <div class="chart-wrap aside-chart">
+          <svg id="aside-chart" viewBox="0 0 1200 320" preserveAspectRatio="none"></svg>
+          <div class="tooltip" id="aside-tooltip"></div>
+        </div>
+        <div class="chart-legend aside-legend" id="aside-legend"></div>
+      </div>
+    </section>
+
+    <!-- Middle: composite-score legend -->
+    <section class="panel legend-panel">
+      <h2>How the score is built</h2>
+      <p class="legend-intro">
+        Each dev's <strong>composite score</strong> for the current window is a
+        weighted sum of z-scored metrics — every contribution is measured
+        against the rest of the active cohort, not against a fixed bar. Bigger
+        weight = bigger impact on rank.
+      </p>
+      <dl class="legend-list">
+        <div>
+          <dt>Bi-weekly Elo rating</dt>
+          <dd>Pairwise rating updates every two weeks: each dev's composite for the period defines a relative "result," and Elo moves their rating accordingly. K-factor tiers down as <em>periods played</em> grows, so short-tenured devs aren't punished by early swings. Provisional badge until they cross the configured periods threshold.</dd>
+        </div>
+        <div>
+          <dt>PRs merged <span class="weight">×3.0</span></dt>
+          <dd>The headline shipping signal. A merged PR is the strongest evidence the work landed.</dd>
+        </div>
+        <div>
+          <dt>Issues resolved <span class="weight">×2.0</span></dt>
+          <dd>Tickets actually closed by this dev in the window — caps "merged a PR but ticket still open" gaming.</dd>
+        </div>
+        <div>
+          <dt>code_impact <span class="weight">×1.5</span></dt>
+          <dd>Substance-of-contribution composite: <code>sqrt(α·unique_files + β·loc_capped + γ·merged_prs)</code>. Combines breadth of files touched, lines changed (p95-capped), and shipping cadence into one depth-of-work number. Replaces raw commit counts in the score.</dd>
+        </div>
+        <div>
+          <dt>PR reviews <span class="weight">×1.0</span></dt>
+          <dd>Counts review submissions on others' PRs. Catches the reviewer-heavy devs who don't show up in raw output numbers.</dd>
+        </div>
+        <div>
+          <dt>PRs opened <span class="weight">×0.5</span></dt>
+          <dd>Created (not necessarily merged) — picks up devs whose work is mid-flight at the window cutoff.</dd>
+        </div>
+        <div>
+          <dt>Issues touched <span class="weight">×0.5</span></dt>
+          <dd>Any Jira activity on this dev's assigned tickets — surfacing engagement that hasn't crossed the "resolved" line yet.</dd>
+        </div>
+        <div>
+          <dt>Active weeks <span class="weight">×0.5</span></dt>
+          <dd>Distinct calendar weeks with at least one signal. Spreads credit across consistency, not just intensity.</dd>
+        </div>
+        <div>
+          <dt>Story points <span class="weight">×0.5</span></dt>
+          <dd>Sum of completed Jira story points — proxy for sized effort when teams use pointing.</dd>
+        </div>
+        <div>
+          <dt>LoC changed <span class="weight">×0.25</span></dt>
+          <dd>Added + deleted, p95-capped and sqrt-dampened so one giant refactor week doesn't dwarf everyone.</dd>
+        </div>
+      </dl>
+    </section>
+
+    <!-- Bottom: team productivity -->
+    <section class="panel team-panel">
+      <div class="team-head">
+        <h2 style="margin:0;">Team productivity <span class="meta" id="team-meta"></span></h2>
+        <div class="team-controls">
+          <div class="control-group" id="team-range" role="tablist" aria-label="Range">
+            <button data-range="3m" class="active">3M</button>
+            <button data-range="6m">6M</button>
+            <button data-range="12m">12M</button>
+            <button data-range="ytd">YTD</button>
+            <button data-range="all">All</button>
+          </div>
+          <label class="compare-control">
+            <span class="control-label">Compare</span>
+            <select id="team-compare" aria-label="Compare to a prior period">
+              <option value="none">None</option>
+              <option value="prev">Previous period</option>
+              <option value="yoy">Same period last year</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <p class="panel-hint">Click a card to chart its monthly trend. Use Compare to overlay a prior period.</p>
+      <div class="stats" id="team-stats"></div>
+
+      <div class="chart-wrap">
+        <svg id="team-chart" viewBox="0 0 1200 280" preserveAspectRatio="none"></svg>
+        <div class="tooltip" id="team-tooltip"></div>
+      </div>
+      <div class="chart-legend" id="team-legend"></div>
+
+      <div id="team-surge-block">
+        <h3 class="surge-title">Surge-detection — projects active in this period</h3>
+        <div class="projects-header" style="margin-top:8px;">
+          <span class="meta" id="team-surge-meta" style="flex:1;"></span>
+          <button class="projects-toggle active" id="team-hide-small" aria-pressed="true">Hide small</button>
+        </div>
+        <div class="projects" id="team-projects"></div>
+      </div>
+    </section>
+
+    <footer>
+      <span id="footer-generated"></span>
+      <span id="footer-history"></span>
+    </footer>
+  </div>
+
+  <div class="loading" id="loading">Loading metrics…</div>
+  <div class="error" id="error" hidden>
+    Could not load <code>/metrics.json</code>. Run
+    <code>velocity refresh</code> then <code>velocity analyze</code>.
+  </div>
+
+  <script src="/util.js" defer></script>
+  <script src="/charts.js" defer></script>
+  <script src="/leaderboard.js" defer></script>
+</body>
+</html>

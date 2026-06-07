@@ -1,0 +1,11 @@
+{{define "nav"}}
+<nav class="site-nav{{if .Incognito}} incognito{{end}}" aria-label="Primary">
+  <a class="brand" href="/">Velocity{{if .Incognito}}<span class="incognito-chip" title="Identities anonymized; persisted in incognito-names.json">Incognito</span>{{end}}</a>
+  <ul class="nav-links">
+    <li><a href="/" data-nav="leaderboard" {{if eq .ActiveNav "leaderboard"}}aria-current="page"{{end}}>Leaderboard</a></li>
+    <li><a href="/velocity" data-nav="velocity" {{if eq .ActiveNav "velocity"}}aria-current="page"{{end}}>Velocity</a></li>
+    <li><a href="/contributors" data-nav="contributors" {{if eq .ActiveNav "contributors"}}aria-current="page"{{end}}>Contributors</a></li>
+    <li><a href="{{.SelfDevURL}}" data-nav="me" {{if eq .ActiveNav "me"}}aria-current="page"{{end}}>Me</a></li>
+  </ul>
+</nav>
+{{end}}

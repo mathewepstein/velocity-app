@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Velocity — Dev</title>
+  <link rel="stylesheet" href="/dashboard.css" />
+</head>
+<body class="{{if .Incognito}}incognito{{end}}">
+  {{template "nav" .}}
+
+  <div class="container">
+    <section class="panel dev-header">
+      <div class="dev-identity">
+        <h1 id="dev-name">Loading…</h1>
+        <div class="dev-meta">
+          <div class="gh-logins" id="dev-gh-logins"></div>
+          <div class="jira-id" id="dev-jira"></div>
+        </div>
+      </div>
+      <div class="dev-rating-block" id="dev-rating-block"></div>
+    </section>
+
+    <section class="panel">
+      <div class="team-head">
+        <h2 style="margin:0;">Totals <span class="meta" id="window-meta"></span></h2>
+        <div class="team-controls">
+          <div class="control-group" id="range-picker" role="tablist" aria-label="Window">
+            <button data-range="3m" class="active">3M</button>
+            <button data-range="6m">6M</button>
+            <button data-range="12m">12M</button>
+            <button data-range="ytd">YTD</button>
+            <button data-range="all">All</button>
+          </div>
+        </div>
+      </div>
+      <p class="panel-hint">The window applies to this whole page — totals, composite score, and both charts. Click a metric to chart its trend.</p>
+      <div class="metric-buttons" id="metric-buttons"></div>
+    </section>
+
+    <section class="panel">
+      <div class="team-head">
+        <h2 style="margin:0;">Trend <span class="meta" id="trend-meta"></span></h2>
+        <div class="team-controls">
+          <label class="compare-control">
+            <span class="control-label">Compare</span>
+            <select id="comparison-picker" aria-label="Compare to a prior period">
+              <option value="none">None</option>
+              <option value="prior">Previous period</option>
+              <option value="yoy">Same period last year</option>
+              <option value="qoq">Previous quarter</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <svg id="trend-chart" viewBox="0 0 1200 320" preserveAspectRatio="none"></svg>
+        <div class="tooltip" id="trend-tooltip"></div>
+      </div>
+      <div class="chart-legend">
+        <span><span class="swatch current"></span>Current</span>
+        <span id="overlay-legend" hidden><span class="swatch overlay"></span>Overlay</span>
+        <span id="trend-pace"></span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Elo rating history <span class="meta" id="elo-meta"></span></h2>
+      <div class="chart-wrap">
+        <svg id="elo-chart" viewBox="0 0 1200 240" preserveAspectRatio="none"></svg>
+        <div class="tooltip" id="elo-tooltip"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Composite score breakdown <span class="meta" id="breakdown-meta"></span></h2>
+      <div id="dev-breakdown"></div>
+    </section>
+
+    <section class="panel">
+      <div class="projects-header">
+        <h2 style="margin:0; flex:1;">Projects <span class="meta" id="projects-meta"></span></h2>
+        <div class="control-group" id="projects-sort" role="tablist" aria-label="Sort projects">
+          <button data-sort="share" class="active">By share</button>
+          <button data-sort="absolute">By volume</button>
+          <button data-sort="surge">Surge only</button>
+        </div>
+      </div>
+      <div class="share-table" role="table" aria-label="Per-dev project shares">
+        <div class="share-row share-head" role="row">
+          <div role="columnheader">Epic</div>
+          <div role="columnheader" class="grow">Summary</div>
+          <div role="columnheader" class="num">PRs</div>
+          <div role="columnheader" class="num">Commits</div>
+          <div role="columnheader" class="num">Reviews</div>
+          <div role="columnheader" class="num">code_impact</div>
+          <div role="columnheader">Triggers</div>
+        </div>
+        <div id="dev-projects"></div>
+      </div>
+    </section>
+
+    <footer>
+      <span id="footer-generated"></span>
+      <span id="footer-history"></span>
+    </footer>
+  </div>
+
+  <div class="loading" id="loading">Loading metrics…</div>
+  <div class="error" id="error" hidden>
+    Could not load <code>/metrics.json</code>. Run
+    <code>velocity refresh</code> then <code>velocity analyze</code>.
+  </div>
+  <div class="error" id="not-found" hidden>
+    No dev found for this URL.
+    <a href="/contributors">See all contributors →</a>
+  </div>
+
+  <script src="/util.js" defer></script>
+  <script src="/charts.js" defer></script>
+  <script src="/dev.js" defer></script>
+</body>
+</html>

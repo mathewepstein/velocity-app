@@ -1,0 +1,366 @@
+package scoring
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/mathewepstein/velocity/internal/cache"
+
+	_ "modernc.org/sqlite"
+)
+
+// ScorerID identifies velocity's own deterministic band scorer. Results are
+// keyed by (ticket, scorer) so a teammate's scorer can store its own rows for
+// the same ticket without collision (plan S4).
+const ScorerID = "velocity-band-v1"
+
+// Source values for a ScoreRecord.
+const (
+	SourceAuto  = "auto"  // the deterministic band, written by the generator
+	SourceHuman = "human" // a human override (e.g. after an LLM insight pass)
+)
+
+// ScoreRecord is one persisted score for a (ticket, scorer) pair. Points is the
+// final value (the deterministic band, or a human override); the band-engine
+// derivations (Band/Confidence/Drivers/…) always describe the deterministic
+// computation, so the UI can show "your override: 5 (auto band was 8)".
+type ScoreRecord struct {
+	Ticket              string  `json:"ticket"`
+	Scorer              string  `json:"scorer"`
+	Points              int     `json:"points"`
+	Source              string  `json:"source"` // auto | human
+	AutoPoints          int     `json:"auto_points"`
+	ExistingStoryPoints float64 `json:"existing_story_points"` // SP already on the Jira ticket (0 = unset)
+	Band          string     `json:"band"`
+	Confidence    string     `json:"confidence"`
+	NeedsInsight  bool       `json:"needs_insight"`
+	QuadrantCell  string     `json:"quadrant_cell"`
+	Drivers       []string   `json:"drivers"`
+	SignalSummary string     `json:"signal_summary"`
+	HardestAspect string     `json:"hardest_aspect"`
+	EvidenceHash  string     `json:"evidence_hash"`
+	ScoredAt      time.Time  `json:"scored_at"`
+	PostedToJira  bool       `json:"posted_to_jira"`
+	JiraPostedAt  *time.Time `json:"jira_posted_at,omitempty"`
+}
+
+// NewAutoRecord builds an auto-source ScoreRecord from a ticket's evidence and
+// its deterministic band, stamping scored_at and the evidence hash.
+func NewAutoRecord(ev *TicketEvidence, b BandResult, at time.Time) ScoreRecord {
+	return ScoreRecord{
+		Ticket:        ev.Key,
+		Scorer:        ScorerID,
+		Points:              b.Points,
+		Source:              SourceAuto,
+		AutoPoints:          b.Points,
+		ExistingStoryPoints: ev.ExistingStoryPoints,
+		Band:                b.Band,
+		Confidence:    b.Confidence,
+		NeedsInsight:  b.NeedsInsight,
+		QuadrantCell:  b.QuadrantCell,
+		Drivers:       b.Drivers,
+		SignalSummary: b.SignalSummary,
+		HardestAspect: b.HardestAspectHint,
+		EvidenceHash:  EvidenceHash(ev),
+		ScoredAt:      at,
+	}
+}
+
+// ScoreFilter narrows a List query.
+type ScoreFilter struct {
+	NeedsInsightOnly bool
+	Scorer           string // "" = any
+	Limit            int    // 0 = no limit
+}
+
+// ScoreStore persists ScoreRecords in a `scores` table inside the shared
+// velocity.db. It opens its own handle to the database so the corpus Store
+// interface (the closed 4-source + manifest seam) stays untouched; the table is
+// created idempotently on open. Concurrency-safe (WAL + busy_timeout) so the
+// daily generator and the live server can both write.
+type ScoreStore struct {
+	db   *sql.DB
+	path string
+}
+
+const scoreSchema = `
+CREATE TABLE IF NOT EXISTS scores (
+	ticket          TEXT    NOT NULL,
+	scorer          TEXT    NOT NULL,
+	points          INTEGER NOT NULL,
+	source          TEXT    NOT NULL,
+	auto_points     INTEGER NOT NULL,
+	existing_story_points REAL NOT NULL DEFAULT 0,
+	band            TEXT,
+	confidence      TEXT,
+	needs_insight   INTEGER NOT NULL DEFAULT 0,
+	quadrant_cell   TEXT,
+	drivers         TEXT,
+	signal_summary  TEXT,
+	hardest_aspect  TEXT,
+	evidence_hash   TEXT,
+	scored_at       TEXT    NOT NULL,
+	posted_to_jira  INTEGER NOT NULL DEFAULT 0,
+	jira_posted_at  TEXT,
+	PRIMARY KEY (ticket, scorer)
+);
+CREATE INDEX IF NOT EXISTS idx_scores_needs_insight ON scores(needs_insight);
+`
+
+// OpenScoreStore opens (creating if absent) the scores table in the database at
+// path; empty path resolves to the standard velocity.db. Callers must Close it.
+func OpenScoreStore(path string) (*ScoreStore, error) {
+	dbPath, err := cache.SQLitePath(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+		return nil, fmt.Errorf("create cache dir: %w", err)
+	}
+	dsn := "file:" + dbPath + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(off)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open sqlite %s: %w", dbPath, err)
+	}
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(scoreSchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("apply scores schema: %w", err)
+	}
+	return &ScoreStore{db: db, path: dbPath}, nil
+}
+
+func (s *ScoreStore) Close() error { return s.db.Close() }
+
+// SaveOutcome reports what SaveAuto did to a row.
+type SaveOutcome string
+
+const (
+	OutcomeInserted  SaveOutcome = "inserted"  // new auto row
+	OutcomeUpdated   SaveOutcome = "updated"    // existing auto row, evidence changed
+	OutcomeSkipped   SaveOutcome = "skipped"    // existing auto row, evidence unchanged (idempotent)
+	OutcomePreserved SaveOutcome = "preserved"  // existing human override kept; auto columns refreshed
+)
+
+// SaveAuto upserts the deterministic band for a ticket while never discarding a
+// human override. For an existing human row it refreshes only the band-engine
+// columns (so the UI sees the current auto band beside the override) and keeps
+// points/source/posted state. For an auto row it skips the write when the
+// evidence hash is unchanged, making the generator idempotent.
+func (s *ScoreStore) SaveAuto(rec ScoreRecord) (SaveOutcome, error) {
+	rec.Scorer = orDefault(rec.Scorer, ScorerID)
+	rec.Source = SourceAuto
+	rec.AutoPoints = rec.Points
+
+	existing, ok, err := s.Get(rec.Ticket, rec.Scorer)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case !ok:
+		if err := s.upsert(rec); err != nil {
+			return "", err
+		}
+		return OutcomeInserted, nil
+	case existing.Source == SourceHuman:
+		// Keep the human decision; refresh the auto-derived view + hash.
+		merged := *existing
+		merged.AutoPoints = rec.Points
+		merged.Band = rec.Band
+		merged.Confidence = rec.Confidence
+		merged.NeedsInsight = rec.NeedsInsight
+		merged.QuadrantCell = rec.QuadrantCell
+		merged.Drivers = rec.Drivers
+		merged.SignalSummary = rec.SignalSummary
+		merged.HardestAspect = rec.HardestAspect
+		merged.EvidenceHash = rec.EvidenceHash
+		if err := s.upsert(merged); err != nil {
+			return "", err
+		}
+		return OutcomePreserved, nil
+	case existing.EvidenceHash == rec.EvidenceHash && rec.EvidenceHash != "":
+		return OutcomeSkipped, nil
+	default:
+		// Preserve any prior posted state on the auto row across recompute.
+		rec.PostedToJira = existing.PostedToJira
+		rec.JiraPostedAt = existing.JiraPostedAt
+		if err := s.upsert(rec); err != nil {
+			return "", err
+		}
+		return OutcomeUpdated, nil
+	}
+}
+
+// SetHumanOverride records a human's final points for a ticket, preserving the
+// deterministic band columns for audit/calibration. Used by the approve-in-UI
+// path (Phase 4/5). autoPoints is the deterministic band at decision time.
+func (s *ScoreStore) SetHumanOverride(ticket, scorer string, points, autoPoints int, at time.Time) error {
+	scorer = orDefault(scorer, ScorerID)
+	existing, ok, err := s.Get(ticket, scorer)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no score row for %s/%s to override", ticket, scorer)
+	}
+	existing.Points = points
+	existing.AutoPoints = autoPoints
+	existing.Source = SourceHuman
+	existing.ScoredAt = at
+	return s.upsert(*existing)
+}
+
+// MarkPosted records that the ticket's score was written to Jira.
+func (s *ScoreStore) MarkPosted(ticket, scorer string, at time.Time) error {
+	scorer = orDefault(scorer, ScorerID)
+	res, err := s.db.Exec(
+		`UPDATE scores SET posted_to_jira=1, jira_posted_at=? WHERE ticket=? AND scorer=?`,
+		fmtTimePtr(&at), ticket, scorer)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("no score row for %s/%s to mark posted", ticket, scorer)
+	}
+	return nil
+}
+
+// Get returns one record. ok is false when absent.
+func (s *ScoreStore) Get(ticket, scorer string) (*ScoreRecord, bool, error) {
+	scorer = orDefault(scorer, ScorerID)
+	row := s.db.QueryRow(selectCols+` WHERE ticket=? AND scorer=?`, ticket, scorer)
+	rec, err := scanScore(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return rec, true, nil
+}
+
+// List returns records matching filter, ordered needs-insight first then ticket.
+func (s *ScoreStore) List(f ScoreFilter) ([]ScoreRecord, error) {
+	q := selectCols + ` WHERE 1=1`
+	var args []any
+	if f.NeedsInsightOnly {
+		q += ` AND needs_insight=1`
+	}
+	if f.Scorer != "" {
+		q += ` AND scorer=?`
+		args = append(args, f.Scorer)
+	}
+	q += ` ORDER BY needs_insight DESC, ticket ASC`
+	if f.Limit > 0 {
+		q += fmt.Sprintf(` LIMIT %d`, f.Limit)
+	}
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ScoreRecord
+	for rows.Next() {
+		rec, err := scanScore(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *rec)
+	}
+	return out, rows.Err()
+}
+
+const selectCols = `SELECT ticket, scorer, points, source, auto_points, existing_story_points,
+	band, confidence, needs_insight, quadrant_cell, drivers, signal_summary, hardest_aspect,
+	evidence_hash, scored_at, posted_to_jira, jira_posted_at FROM scores`
+
+func (s *ScoreStore) upsert(rec ScoreRecord) error {
+	drivers, _ := json.Marshal(rec.Drivers)
+	_, err := s.db.Exec(`
+INSERT INTO scores (ticket, scorer, points, source, auto_points, existing_story_points,
+	band, confidence, needs_insight, quadrant_cell, drivers, signal_summary, hardest_aspect,
+	evidence_hash, scored_at, posted_to_jira, jira_posted_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(ticket, scorer) DO UPDATE SET
+	points=excluded.points, source=excluded.source, auto_points=excluded.auto_points,
+	existing_story_points=excluded.existing_story_points,
+	band=excluded.band, confidence=excluded.confidence, needs_insight=excluded.needs_insight,
+	quadrant_cell=excluded.quadrant_cell, drivers=excluded.drivers,
+	signal_summary=excluded.signal_summary, hardest_aspect=excluded.hardest_aspect,
+	evidence_hash=excluded.evidence_hash, scored_at=excluded.scored_at,
+	posted_to_jira=excluded.posted_to_jira, jira_posted_at=excluded.jira_posted_at`,
+		rec.Ticket, rec.Scorer, rec.Points, rec.Source, rec.AutoPoints, rec.ExistingStoryPoints,
+		rec.Band, rec.Confidence,
+		boolToInt(rec.NeedsInsight), rec.QuadrantCell, string(drivers), rec.SignalSummary, rec.HardestAspect,
+		rec.EvidenceHash, fmtTime(rec.ScoredAt), boolToInt(rec.PostedToJira), fmtTimePtr(rec.JiraPostedAt))
+	return err
+}
+
+// scanner abstracts *sql.Row and *sql.Rows for scanScore.
+type scanner interface {
+	Scan(dest ...any) error
+}
+
+func scanScore(sc scanner) (*ScoreRecord, error) {
+	var (
+		rec      ScoreRecord
+		needs    int
+		posted   int
+		drivers  sql.NullString
+		scoredAt string
+		postedAt sql.NullString
+	)
+	err := sc.Scan(&rec.Ticket, &rec.Scorer, &rec.Points, &rec.Source, &rec.AutoPoints,
+		&rec.ExistingStoryPoints, &rec.Band, &rec.Confidence, &needs, &rec.QuadrantCell, &drivers,
+		&rec.SignalSummary, &rec.HardestAspect, &rec.EvidenceHash, &scoredAt, &posted, &postedAt)
+	if err != nil {
+		return nil, err
+	}
+	rec.NeedsInsight = needs != 0
+	rec.PostedToJira = posted != 0
+	if drivers.Valid && drivers.String != "" {
+		_ = json.Unmarshal([]byte(drivers.String), &rec.Drivers)
+	}
+	if t, err := parseTime(scoredAt); err == nil {
+		rec.ScoredAt = t
+	}
+	if postedAt.Valid {
+		if t, err := parseTime(postedAt.String); err == nil {
+			rec.JiraPostedAt = &t
+		}
+	}
+	return &rec, nil
+}
+
+// --- local sqlite helpers (mirrors internal/cache; kept local so ScoreStore
+// owns its persistence without exporting cache internals). ---
+
+func fmtTime(t time.Time) string { return t.Format(time.RFC3339Nano) }
+
+func fmtTimePtr(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.Format(time.RFC3339Nano)
+}
+
+func parseTime(s string) (time.Time, error) { return time.Parse(time.RFC3339Nano, s) }
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
+}

@@ -39,6 +39,13 @@ type driver struct {
 // Band computes the deterministic band for ev under cfg. It is pure: same
 // evidence + config always yields the same result.
 func Band(ev *TicketEvidence, cfg config.StoryPointsConfig) BandResult {
+	// PR-less investigation tickets are routed to the spike scorer (cycle ×
+	// artifact-density), bypassing the LOC quadrant and the "no PR → flag low"
+	// gate that would otherwise mis-score them.
+	if isSpike(ev) && len(ev.PRs) == 0 {
+		return bandSpike(ev, cfg)
+	}
+
 	scale := cfg.Scale
 	if len(scale) == 0 {
 		scale = []int{1, 2, 3, 5, 8, 13}
@@ -69,16 +76,24 @@ func Band(ev *TicketEvidence, cfg config.StoryPointsConfig) BandResult {
 	// genuinely risky, and a small diff with real approach debate is genuinely
 	// hard (this is the locked high-risk-small-fix anchor → 5).
 	reworkScale := 1.0
-	if cfg.SmallDiffLOCFloor > 0 && ev.NetLOC > 0 && ev.NetLOC < cfg.SmallDiffLOCFloor && cfg.SmallDiffBonusScale > 0 {
+	// Bug-aware small-diff floor: the size floor treats a sub-floor diff's rework
+	// as flaky churn and downscales it. For bug/regression tickets that's wrong —
+	// a 2-line fix that bounced is real diagnosis effort, not big work — so the
+	// downscale is suppressed (scale stays 1.0) for bug types.
+	if !isBugType(ev) && cfg.SmallDiffLOCFloor > 0 && ev.NetLOC > 0 && ev.NetLOC < cfg.SmallDiffLOCFloor && cfg.SmallDiffBonusScale > 0 {
 		reworkScale = cfg.SmallDiffBonusScale
 	}
 
+	reworkWeight := cfg.ReworkWeight
+	if isBugType(ev) && cfg.Bug.ReworkWeight > 0 {
+		reworkWeight = cfg.Bug.ReworkWeight
+	}
 	if ev.ReworkCount > 0 {
 		// Saturate the count (Phase 4a): the 1st/2nd bounce carry full signal, a
 		// runaway 7th barely moves the band — capped per-signal so normal sums
 		// still land on clean Fibonacci steps.
 		n := saturate(ev.ReworkCount, cfg.ReworkCountCap)
-		add(float64(n)*cfg.ReworkWeight*reworkScale, "Rework: %d backward bounce(s) from review/QA into dev", ev.ReworkCount)
+		add(float64(n)*reworkWeight*reworkScale, "Rework: %d backward bounce(s) from review/QA into dev", ev.ReworkCount)
 	}
 	if ev.ReviewRounds > 0 {
 		n := saturate(ev.ReviewRounds, cfg.ReviewRoundCap)
@@ -87,11 +102,23 @@ func Band(ev *TicketEvidence, cfg config.StoryPointsConfig) BandResult {
 	if ev.DeepThreads > 0 {
 		add(float64(ev.DeepThreads)*cfg.DeepThreadWeight, "Approach contention: %d deep review thread(s)", ev.DeepThreads)
 	}
+	highRiskBonus := cfg.HighRiskBonus
+	if isBugType(ev) && cfg.Bug.HighRiskBonus > 0 {
+		highRiskBonus = cfg.Bug.HighRiskBonus
+	}
 	switch ev.TouchedAreaRisk {
 	case "high":
-		add(cfg.HighRiskBonus, "High-risk area: %d hot file(s) touched (%s)", len(ev.HotFiles), hotFilesPreview(ev.HotFiles))
+		if ev.RiskReason != "" {
+			add(highRiskBonus, "High-risk area: domain match %q", ev.RiskReason)
+		} else {
+			add(highRiskBonus, "High-risk area: %d hot file(s) touched (%s)", len(ev.HotFiles), hotFilesPreview(ev.HotFiles))
+		}
 	case "medium":
-		add(cfg.MediumRiskBonus, "Moderate-risk area: %d hot file(s) touched", len(ev.HotFiles))
+		if ev.RiskReason != "" {
+			add(cfg.MediumRiskBonus, "Moderate-risk area: domain match %q", ev.RiskReason)
+		} else {
+			add(cfg.MediumRiskBonus, "Moderate-risk area: %d hot file(s) touched", len(ev.HotFiles))
+		}
 	}
 	if len(ev.Repos) > 1 {
 		add(cfg.CrossRepoBonus, "Cross-repo change spanning %d repos", len(ev.Repos))

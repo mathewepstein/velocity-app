@@ -69,6 +69,13 @@ type TicketEvidence struct {
 	ReworkCount     int        `json:"rework_count,omitempty"`      // backward bounces review/QA→dev — the band signal
 	PreCodeComments int        `json:"pre_code_comments,omitempty"`
 	TotalComments   int        `json:"total_comments,omitempty"`
+	// Spike artifact-density signals, derived from description + comment bodies at
+	// extraction time. ArtifactLinks counts distinct doc/planning URLs (Confluence,
+	// MCP, implementation/discovery markdown); SubstantiveComments counts comments
+	// bearing a code fence, a URL, or above a built-in length floor. Both feed the
+	// spike scorer's artifact axis; they are inert on the standard band path.
+	ArtifactLinks       int `json:"artifact_links,omitempty"`
+	SubstantiveComments int `json:"substantive_comments,omitempty"`
 	FirstInProgress *time.Time `json:"first_in_progress,omitempty"`
 	DoneAt          *time.Time `json:"done_at,omitempty"`
 	DetailFetched   bool       `json:"detail_fetched"`
@@ -92,6 +99,11 @@ type TicketEvidence struct {
 	// --- Touched-area risk (corpus-relative). ---
 	TouchedAreaRisk string   `json:"touched_area_risk"`  // low | medium | high
 	HotFiles        []string `json:"hot_files,omitempty"` // touched files in the top corpus-frequency tier
+	// RiskReason names the configured domain-risk glob that drove (or tied for)
+	// the tier, when the domain dimension is what elevated it. Empty when the
+	// churn/hot-file signal drove the tier — the band's driver text then falls
+	// back to the hot-file preview.
+	RiskReason string `json:"risk_reason,omitempty"`
 }
 
 // PREvidence is the per-PR slice of the bundle for one matched pull request.
@@ -115,7 +127,8 @@ type PREvidence struct {
 // Extractor assembles TicketEvidence from a loaded corpus. Build it once (it
 // constructs reverse indices over the whole corpus) and Extract many tickets.
 type Extractor struct {
-	norm config.NormalizeConfig
+	norm    config.NormalizeConfig
+	riskCfg config.RiskConfig // config-driven domain risk (empty = churn-only baseline)
 
 	issueByKey map[string]*cache.JiraIssue
 	prsByKey   map[string][]*cache.GitHubPR // ticket key -> PRs referencing it
@@ -135,16 +148,19 @@ func BuildExtractor(profile config.Profile, store cache.Store, now time.Time) (*
 	if err != nil {
 		return nil, err
 	}
-	return NewExtractor(data, profile.Scoring.Normalize, profile.StoryPoints.ReworkMinDwell()), nil
+	return NewExtractor(data, profile.Scoring.Normalize, profile.StoryPoints.ReworkMinDwell(), profile.StoryPoints.Risk), nil
 }
 
 // NewExtractor builds the reverse indices over data. norm supplies the
 // generated-file patterns used to compute net (non-generated) LOC, matching the
 // code_impact normalizer. reworkMinDwell tunes the rework de-noiser (a
 // commit-less backward bounce shorter than this is treated as toggle noise).
-func NewExtractor(data *analyze.Loaded, norm config.NormalizeConfig, reworkMinDwell time.Duration) *Extractor {
+// riskCfg adds the config-driven domain-risk dimension; an empty RiskConfig
+// leaves touched-area risk byte-identical to the churn-only baseline.
+func NewExtractor(data *analyze.Loaded, norm config.NormalizeConfig, reworkMinDwell time.Duration, riskCfg config.RiskConfig) *Extractor {
 	e := &Extractor{
 		norm:             norm,
+		riskCfg:          riskCfg,
 		issueByKey:       make(map[string]*cache.JiraIssue, len(data.Issues)),
 		prsByKey:         make(map[string][]*cache.GitHubPR),
 		reviewsByPR:      make(map[string][]cache.GitHubReview),
@@ -234,6 +250,7 @@ func (e *Extractor) Extract(ticketKey string) (*TicketEvidence, bool) {
 		DoneAt:              iss.DoneAt,
 		DetailFetched:       iss.DetailFetched,
 	}
+	ev.ArtifactLinks, ev.SubstantiveComments = spikeArtifactSignals(iss)
 
 	prs := e.prsByKey[ku]
 	reviewers := map[string]struct{}{}
@@ -321,7 +338,19 @@ func (e *Extractor) Extract(ticketKey string) (*TicketEvidence, bool) {
 	ev.DistinctReviewers = len(reviewers)
 	ev.Repos = sortedKeys(repos)
 	ev.HotFiles = sortedKeys(hot)
-	ev.TouchedAreaRisk = riskBand(len(hot), len(netFiles))
+
+	// Touched-area risk = max(churn-derived tier, config domain tier). The churn
+	// signal (hot files) is the zero-config baseline; the domain dimension scans
+	// every non-generated touched path (including config/migration resources that
+	// the churn signal deliberately excludes) against the configured globs and
+	// only ever elevates. RiskReason records the matching glob when domain drove
+	// (or tied for) the tier, so the band can explain location-based risk.
+	churnTier := riskBand(len(hot), len(netFiles))
+	domainTier, matched := domainRiskTier(sortedKeys(netFiles), e.riskCfg)
+	ev.TouchedAreaRisk = maxTier(churnTier, domainTier)
+	if domainTier != "low" && riskTierRank(domainTier) >= riskTierRank(churnTier) {
+		ev.RiskReason = matched
+	}
 	return ev, true
 }
 

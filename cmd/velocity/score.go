@@ -31,7 +31,104 @@ func scoreCmd() *cobra.Command {
 	cmd.AddCommand(scoreListCmd())
 	cmd.AddCommand(scoreExportCmd())
 	cmd.AddCommand(scoreCalibrateCmd())
+	cmd.AddCommand(scoreRiskDiscoverCmd())
 	return cmd
+}
+
+func scoreRiskDiscoverCmd() *cobra.Command {
+	var (
+		minTickets   int
+		depth        int
+		top          int
+		seedKeywords bool
+		jsonOut      bool
+	)
+	cmd := &cobra.Command{
+		Use:   "risk-discover",
+		Short: "Propose a [storypoints.risk] domain-risk config from the corpus (read-only)",
+		Long: `Sweep the cached corpus and propose directories worth flagging as
+high/medium domain risk, ranked by outcome-correlation — areas whose tickets
+historically cost more (active cycle + rework) than the corpus baseline —
+blended with a structural migration-directory detector (db/changelog,
+migrations, liquibase). Empirical and org-agnostic: no opinions are baked in.
+
+Prints a paste-ready [storypoints.risk] TOML block plus the evidence behind each
+proposal. It does NOT write config (mirrors 'devs discover') — review, curate,
+paste into config.toml, then re-run 'score generate'. Run after 'refresh'.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, store, ext, err := loadCorpus()
+			if err != nil {
+				return err
+			}
+			defer store.Close()
+
+			res := scoring.RiskDiscover(ext, scoring.RiskDiscoverOpts{
+				MinTickets:   minTickets,
+				Depth:        depth,
+				Top:          top,
+				SeedKeywords: seedKeywords,
+			})
+
+			w := cmd.OutOrStdout()
+			if jsonOut {
+				enc := json.NewEncoder(w)
+				enc.SetIndent("", "  ")
+				return enc.Encode(res)
+			}
+
+			fmt.Fprintf(w, "Scanned %d post-hoc tickets · corpus baseline: cycle %.1fd, rework %.0f%%\n\n",
+				res.TicketsScanned, res.BaselineCycle, res.BaselineRework*100)
+			if len(res.Candidates) == 0 {
+				fmt.Fprintln(w, "No directories cleared the risk thresholds. Lower --min-tickets or try --seed-keywords.")
+				return nil
+			}
+
+			var high, medium []string
+			for _, c := range res.Candidates {
+				if c.Tier == "high" {
+					high = append(high, c.Glob)
+				} else {
+					medium = append(medium, c.Glob)
+				}
+			}
+			fmt.Fprintln(w, "Paste-ready (curate before using):")
+			fmt.Fprintln(w, "[profiles.default.storypoints.risk]")
+			fmt.Fprintf(w, "high   = [%s]\n", quoteList(high))
+			fmt.Fprintf(w, "medium = [%s]\n\n", quoteList(medium))
+
+			fmt.Fprintln(w, "Evidence:")
+			for _, c := range res.Candidates {
+				note := ""
+				if c.Migration {
+					note = "  (migration dir)"
+				} else if c.Seed {
+					note = "  (seed-keyword suggestion)"
+				}
+				fmt.Fprintf(w, "  %-44s %3d tickets · cycle %.1fd (%.1f×) · rework %.0f%% (%.1f×)  → %s%s\n",
+					c.Glob, c.Tickets, c.CycleDays, c.CycleRatio, c.ReworkRate*100, c.ReworkRatio, c.Tier, note)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&minTickets, "min-tickets", 5, "minimum tickets touching a directory for it to be ranked")
+	cmd.Flags().IntVar(&depth, "depth", 3, "in-repo path depth at which directories are grouped")
+	cmd.Flags().IntVar(&top, "top", 0, "keep only the top-N ranked directories (0 = all)")
+	cmd.Flags().BoolVar(&seedKeywords, "seed-keywords", false, "also surface directories whose path contains a generic sensitive term (auth/billing/credit/…)")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "emit the full proposal as JSON")
+	return cmd
+}
+
+// quoteList renders a slice of globs as a TOML inline-array body (quoted,
+// comma-separated). Empty slice → "" so the array reads `[]`.
+func quoteList(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	q := make([]string, len(items))
+	for i, s := range items {
+		q[i] = fmt.Sprintf("%q", s)
+	}
+	return strings.Join(q, ", ")
 }
 
 func scoreCalibrateCmd() *cobra.Command {
@@ -142,7 +239,7 @@ func loadCorpus() (config.Profile, cache.Store, *scoring.Extractor, error) {
 		store.Close()
 		return profile, nil, nil, err
 	}
-	return profile, store, scoring.NewExtractor(data, profile.Scoring.Normalize, profile.StoryPoints.ReworkMinDwell()), nil
+	return profile, store, scoring.NewExtractor(data, profile.Scoring.Normalize, profile.StoryPoints.ReworkMinDwell(), profile.StoryPoints.Risk), nil
 }
 
 func scoreGenerateCmd() *cobra.Command {
@@ -333,7 +430,7 @@ cache only — no API calls, no LLM.`,
 				return err
 			}
 
-			ext := scoring.NewExtractor(data, profile.Scoring.Normalize, profile.StoryPoints.ReworkMinDwell())
+			ext := scoring.NewExtractor(data, profile.Scoring.Normalize, profile.StoryPoints.ReworkMinDwell(), profile.StoryPoints.Risk)
 			ev, ok := ext.Extract(args[0])
 			if !ok {
 				return fmt.Errorf("ticket %s not found in cache", args[0])
@@ -398,7 +495,7 @@ and any external scorer consume the same bundle.`,
 				return err
 			}
 
-			ext := scoring.NewExtractor(data, profile.Scoring.Normalize, profile.StoryPoints.ReworkMinDwell())
+			ext := scoring.NewExtractor(data, profile.Scoring.Normalize, profile.StoryPoints.ReworkMinDwell(), profile.StoryPoints.Risk)
 			ev, ok := ext.Extract(args[0])
 			if !ok {
 				return fmt.Errorf("ticket %s not found in cache", args[0])

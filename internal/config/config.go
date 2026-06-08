@@ -156,7 +156,86 @@ type StoryPointsConfig struct {
 	// stamping them. Set well above the 13 floor so only clearly-oversized work
 	// trips it, not every defensible-contention 13. 0 disables. Default 18.
 	SplitThreshold float64 `toml:"split_threshold"`
+
+	// Risk adds a config-driven *domain* dimension to touched-area risk on top of
+	// the corpus-churn signal. The churn signal (hot-file frequency) is the
+	// zero-config baseline; Risk layers genuine risk-by-location (auth, billing,
+	// credit, DB migrations, shared libs) that churn alone misses — a 3-line
+	// null-check in an auth service is high-risk regardless of how often the file
+	// is touched. The final tier is max(churn-derived, domain-config) so domain
+	// only ever elevates. **Empty is the intended default** — nothing org-specific
+	// ships in the binary; populate it via `velocity score risk-discover` or by
+	// hand. Not filled by applyDefaults (same pattern as MaxThinkingBonus).
+	Risk RiskConfig `toml:"risk"`
+
+	// Bug differentiates bug/regression tickets from feature tasks. Bugs are
+	// disproportionately small-diff/high-thinking (a 2-line fix that bounced is
+	// real diagnosis effort, not flaky churn), so the small-diff rework downscale
+	// is suppressed for bug types unconditionally. The optional weighting bumps
+	// here are **off/neutral by default** — only populate after a calibration
+	// sweep shows bugs systematically under-banded.
+	Bug BugConfig `toml:"bug"`
+
+	// Spike parameterises the PR-less investigation-ticket scorer. A spike has no
+	// merged PR by design, so the standard "no PR → flag low" gate is wrong for
+	// it; spikes are routed to a separate cycle-time × artifact-density quadrant
+	// instead. Filled with working defaults by applyDefaults (unlike Risk/Bug,
+	// the spike path needs live thresholds to function once a ticket routes to it).
+	Spike SpikeConfig `toml:"spike"`
 }
+
+// SpikeConfig parameterises the spike (investigation-ticket) scorer. The quadrant
+// axis is active-cycle × artifact-density (research docs + substantive comments)
+// — there is no LOC axis because a spike legitimately produces no diff. The
+// "no merged PR" needs-insight flag is suppressed on this path.
+type SpikeConfig struct {
+	// CycleDaysThreshold is the "multi-day spike" boundary on the active cycle
+	// (default 2). Spikes routinely exceed it; that's expected, not inflation.
+	CycleDaysThreshold float64 `toml:"cycle_days_threshold"`
+	// ArtifactThreshold is the artifact-density boundary: at or above it a spike
+	// is "well-evidenced" (research docs + substantive comments). Default 2.
+	// Artifact density = doc/planning links + substantive comments, both derived
+	// at extraction time onto TicketEvidence.
+	ArtifactThreshold int `toml:"artifact_threshold"`
+
+	// Quadrant base efforts for the cycle × density cells (continuous, pre-nudge).
+	BaseShortLow  float64 `toml:"base_short_low"`  // short cycle, few artifacts (default 1.5)
+	BaseShortHigh float64 `toml:"base_short_high"` // short cycle, many artifacts (default 3.0)
+	BaseLongLow   float64 `toml:"base_long_low"`   // multi-day, few artifacts (default 3.0)
+	BaseLongHigh  float64 `toml:"base_long_high"`  // multi-day, many artifacts (default 5.0)
+}
+
+// RiskConfig holds glob path-lists that elevate touched-area risk by location.
+// Globs use doublestar semantics (`**` spans path segments, `*`/`?` within a
+// segment), matched against every non-test/non-resource path a ticket's PRs
+// touched. A path matching any High glob makes the domain tier high; else any
+// Medium glob makes it medium; else low. Both lists empty (the default) means
+// the domain dimension contributes nothing and risk is byte-identical to the
+// churn-only baseline.
+type RiskConfig struct {
+	High   []string `toml:"high"`
+	Medium []string `toml:"medium"`
+}
+
+// Empty reports whether no domain-risk globs are configured, so the extractor
+// can skip the per-path scan entirely on a stock install.
+func (r RiskConfig) Empty() bool { return len(r.High) == 0 && len(r.Medium) == 0 }
+
+// BugConfig optionally re-weights thinking signals for bug-type tickets. Zero
+// values mean "no override" — the engine uses the standard StoryPoints weights.
+// Christian's backend rubric weights reproduction/cycle/risk heavier for bugs;
+// these knobs let a calibrated config lean into that, but ship neutral.
+type BugConfig struct {
+	// ReworkWeight, if > 0, replaces ReworkWeight for bug-type tickets. 0 = use
+	// the standard weight.
+	ReworkWeight float64 `toml:"rework_weight"`
+	// HighRiskBonus, if > 0, replaces HighRiskBonus for bug-type tickets. 0 = use
+	// the standard bonus.
+	HighRiskBonus float64 `toml:"high_risk_bonus"`
+}
+
+// Empty reports whether no bug-specific overrides are configured.
+func (b BugConfig) Empty() bool { return b.ReworkWeight == 0 && b.HighRiskBonus == 0 }
 
 // ReworkMinDwell returns ReworkMinDwellMins as a duration for the rework
 // de-noiser (analyze.ReworkCountWithCommits).
@@ -462,6 +541,17 @@ func DefaultStoryPointsConfig() StoryPointsConfig {
 		SmallDiffLOCFloor:      20,
 		SmallDiffBonusScale:    0.5,
 		SplitThreshold:         18,
+		// Risk and Bug ship empty/neutral by intent — no org-specific paths or
+		// weighting in the binary. Spike ships working defaults so a routed spike
+		// scores without requiring config.
+		Spike: SpikeConfig{
+			CycleDaysThreshold: 2,
+			ArtifactThreshold:  2,
+			BaseShortLow:       1.5,
+			BaseShortHigh:      3.0,
+			BaseLongLow:        3.0,
+			BaseLongHigh:       5.0,
+		},
 	}
 }
 
@@ -981,7 +1071,29 @@ func (c *Config) applyDefaults() {
 		p.StoryPoints.SplitThreshold = spDef.SplitThreshold
 	}
 	// MaxThinkingBonus has no fill: its zero value (disabled) is the intended
-	// default, like the dump/churn toggles in CodeImpactConfig.
+	// default, like the dump/churn toggles in CodeImpactConfig. Risk and Bug have
+	// no fill either — empty is the intended default (no org-specific paths /
+	// neutral bug weighting in the binary).
+
+	// Spike block: working defaults so a routed spike scores without config.
+	if p.StoryPoints.Spike.CycleDaysThreshold == 0 {
+		p.StoryPoints.Spike.CycleDaysThreshold = spDef.Spike.CycleDaysThreshold
+	}
+	if p.StoryPoints.Spike.ArtifactThreshold == 0 {
+		p.StoryPoints.Spike.ArtifactThreshold = spDef.Spike.ArtifactThreshold
+	}
+	if p.StoryPoints.Spike.BaseShortLow == 0 {
+		p.StoryPoints.Spike.BaseShortLow = spDef.Spike.BaseShortLow
+	}
+	if p.StoryPoints.Spike.BaseShortHigh == 0 {
+		p.StoryPoints.Spike.BaseShortHigh = spDef.Spike.BaseShortHigh
+	}
+	if p.StoryPoints.Spike.BaseLongLow == 0 {
+		p.StoryPoints.Spike.BaseLongLow = spDef.Spike.BaseLongLow
+	}
+	if p.StoryPoints.Spike.BaseLongHigh == 0 {
+		p.StoryPoints.Spike.BaseLongHigh = spDef.Spike.BaseLongHigh
+	}
 
 	// Migrate legacy single-login DevIdentity entries to the plural form.
 	// Idempotent: entries already on the new schema are left alone.

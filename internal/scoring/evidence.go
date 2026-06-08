@@ -271,7 +271,14 @@ func (e *Extractor) Extract(ticketKey string) (*TicketEvidence, bool) {
 				testFiles[f] = struct{}{}
 				prTests++
 			}
-			if e.hotCutoff > 0 && e.fileFreq[f] >= e.hotCutoff {
+			// A file is "hot/risky" only if it's both high-churn AND real code.
+			// Test files and config/i18n/data resources are high-churn by nature
+			// (every feature edits them) but touching them isn't risk — counting
+			// them inflated the risk signal (e.g. messages.properties is the most-
+			// touched path in the whole corpus). Exclude them from the hot set; the
+			// frequency index + cutoff are left intact so genuine hot code is
+			// unaffected.
+			if e.hotCutoff > 0 && e.fileFreq[f] >= e.hotCutoff && !isRiskExcludedFile(f) {
 				hot[f] = struct{}{}
 			}
 		}
@@ -409,6 +416,30 @@ func isTestFile(p string) bool {
 		}
 	}
 	return strings.HasPrefix(pl, "test/") || strings.HasPrefix(pl, "tests/")
+}
+
+// isRiskExcludedFile reports whether a high-churn file should be kept OUT of the
+// touched-area-risk signal. Test files and non-code resources (config, i18n,
+// data, lockfiles, build descriptors) churn constantly without carrying risk, so
+// their churn is boilerplate, not danger.
+func isRiskExcludedFile(p string) bool {
+	return isTestFile(p) || isResourceFile(p)
+}
+
+// riskExcludedExt is the set of non-code file extensions excluded from the
+// touched-area-risk signal. These are config/i18n/data/build files: frequently
+// edited, but editing them is rarely the risky part of a change. Code
+// extensions (.java/.go/.ts/.vue/.kt/.swift/.py/.sql/.html/…) are intentionally
+// absent so genuine hot code still registers as risk.
+var riskExcludedExt = map[string]bool{
+	".properties": true, ".json": true, ".yaml": true, ".yml": true, ".xml": true,
+	".csv": true, ".toml": true, ".ini": true, ".lock": true, ".cfg": true,
+	".conf": true, ".gradle": true, ".md": true, ".txt": true, ".map": true,
+}
+
+// isResourceFile reports whether p is a non-code config/i18n/data/build file.
+func isResourceFile(p string) bool {
+	return riskExcludedExt[strings.ToLower(path.Ext(p))]
 }
 
 // hotFileCutoff picks the PR-touch-frequency threshold above which a file counts

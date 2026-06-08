@@ -175,6 +175,54 @@ func TestExtract_TouchedAreaRisk(t *testing.T) {
 	}
 }
 
+// TestExtract_RiskExcludesTestAndResourceFiles locks the AB calibration: a
+// high-churn test file and a high-churn resource file are NOT counted as risk,
+// even though they clear the hot-file frequency cutoff. Only the real source
+// file registers, so a ticket touching all three reads as medium (1 hot), not
+// high (would be 3 hot under the old churn-only rule).
+func TestExtract_RiskExcludesTestAndResourceFiles(t *testing.T) {
+	const (
+		src  = "src/main/java/com/x/Service.java"
+		test = "src/test/java/com/x/ServiceTest.java"
+		prop = "src/main/resources/messages.properties"
+	)
+	data := &analyze.Loaded{
+		Issues: []cache.JiraIssue{{Key: "CD-300", Summary: "feature", Created: time.Now()}},
+		PRs: []cache.GitHubPR{{
+			Number: 1, Repo: "org/app", State: "merged", IssueKeys: []string{"CD-300"},
+			FileChanges: []cache.FileChange{
+				{Path: src, Additions: 50, Deletions: 5},
+				{Path: test, Additions: 40, Deletions: 0},
+				{Path: prop, Additions: 3, Deletions: 0},
+			},
+			Additions: 93, Deletions: 5,
+		}},
+	}
+	// Background PRs so all three paths clear the floor-5 hot cutoff.
+	for i := 0; i < 6; i++ {
+		for _, f := range []string{src, test, prop} {
+			data.PRs = append(data.PRs, bgPR(100+i*3+len(f)%3, "org/app", f))
+		}
+	}
+
+	ext := NewExtractor(data, defaultNorm(), 5*time.Minute)
+	ev, ok := ext.Extract("CD-300")
+	if !ok {
+		t.Fatal("CD-300 not found")
+	}
+	for _, f := range ev.HotFiles {
+		if f == test || f == prop {
+			t.Errorf("risk-excluded file in HotFiles: %s (got %v)", f, ev.HotFiles)
+		}
+	}
+	if len(ev.HotFiles) != 1 || ev.HotFiles[0] != src {
+		t.Errorf("HotFiles = %v, want only [%s]", ev.HotFiles, src)
+	}
+	if ev.TouchedAreaRisk != "medium" {
+		t.Errorf("TouchedAreaRisk = %q, want medium (1 real hot file)", ev.TouchedAreaRisk)
+	}
+}
+
 func TestExtract_NoPRsStillReturns(t *testing.T) {
 	data := fixture()
 	data.Issues = append(data.Issues, cache.JiraIssue{

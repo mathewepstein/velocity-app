@@ -144,7 +144,7 @@
     const bar = document.getElementById('select-bar');
     const n = state.selectedKeys.size;
     bar.hidden = n === 0;
-    if (n) document.getElementById('select-count').textContent = `${n} selected`;
+    document.getElementById('select-count').textContent = `${n} selected`;
     syncSelectAllState();
   }
 

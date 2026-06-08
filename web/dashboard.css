@@ -1562,17 +1562,28 @@ footer {
 }
 /* Sticky selection action bar — appears when ≥1 row is selected. */
 .select-bar {
-  position: sticky;
+  position: fixed;
+  left: 0;
+  right: 0;
   bottom: 0;
+  z-index: 50;
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-top: 10px;
-  padding: 10px 12px;
+  padding: 12px 32px;
   background: var(--panel);
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.3);
+  border-top: 1px solid var(--accent);
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.4);
+}
+/* The JS toggles the `hidden` attribute; without this the display:flex above
+   would override the UA [hidden] rule and the bar would never disappear. */
+.select-bar[hidden] {
+  display: none;
+}
+/* .copy-btn is full-width by default (stacked copy buttons); in the action bar
+   it sits inline next to the count, so override back to auto. */
+.select-bar .copy-btn {
+  width: auto;
 }
 .select-bar .select-count {
   font-size: 13px;

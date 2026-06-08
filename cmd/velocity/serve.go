@@ -6,6 +6,7 @@ import (
 
 	"github.com/mathewepstein/velocity/internal/cache"
 	"github.com/mathewepstein/velocity/internal/config"
+	"github.com/mathewepstein/velocity/internal/scoring"
 	"github.com/mathewepstein/velocity/internal/server"
 	"github.com/spf13/cobra"
 )
@@ -34,15 +35,21 @@ func serveCmd() *cobra.Command {
 				return err
 			}
 			defer store.Close()
+			scoreStore, err := scoring.OpenScoreStore("")
+			if err != nil {
+				return err
+			}
+			defer scoreStore.Close()
 			warnIfNoRoster(cmd.OutOrStdout(), profile)
 			return server.Serve(ctx, server.Options{
-				Port:      port,
-				Open:      open,
-				Out:       cmd.OutOrStdout(),
-				SelfLogin: selfLogin,
-				Incognito: incognito,
-				Profile:   profile,
-				Store:     store,
+				Port:       port,
+				Open:       open,
+				Out:        cmd.OutOrStdout(),
+				SelfLogin:  selfLogin,
+				Incognito:  incognito,
+				Profile:    profile,
+				Store:      store,
+				ScoreStore: scoreStore,
 			})
 		},
 	}

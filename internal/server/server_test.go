@@ -12,7 +12,7 @@ import (
 )
 
 func TestHandler_HealthzIsOK(t *testing.T) {
-	h, err := buildHandler("", false, config.Profile{}, nil)
+	h, err := buildHandler("", false, config.Profile{}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
@@ -28,7 +28,7 @@ func TestHandler_HealthzIsOK(t *testing.T) {
 }
 
 func TestHandler_RootRendersLeaderboard(t *testing.T) {
-	h, err := buildHandler("", false, config.Profile{}, nil)
+	h, err := buildHandler("", false, config.Profile{}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestHandler_RootRendersLeaderboard(t *testing.T) {
 }
 
 func TestHandler_DevPageRendered(t *testing.T) {
-	h, err := buildHandler("", false, config.Profile{}, nil)
+	h, err := buildHandler("", false, config.Profile{}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestHandler_DevPageRendered(t *testing.T) {
 }
 
 func TestHandler_ContributorsRendered(t *testing.T) {
-	h, err := buildHandler("", false, config.Profile{}, nil)
+	h, err := buildHandler("", false, config.Profile{}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestHandler_ContributorsRendered(t *testing.T) {
 }
 
 func TestHandler_MeLinkUsesSelfLogin(t *testing.T) {
-	h, err := buildHandler("alice", false, config.Profile{}, nil)
+	h, err := buildHandler("alice", false, config.Profile{}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestHandler_MeLinkUsesSelfLogin(t *testing.T) {
 }
 
 func TestHandler_ServesEmbeddedJS(t *testing.T) {
-	h, err := buildHandler("", false, config.Profile{}, nil)
+	h, err := buildHandler("", false, config.Profile{}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestHandler_ServesEmbeddedJS(t *testing.T) {
 }
 
 func TestHandler_MetricsHeadersNoCache(t *testing.T) {
-	h, err := buildHandler("", false, config.Profile{}, nil)
+	h, err := buildHandler("", false, config.Profile{}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestHandler_MetricsHeadersNoCache(t *testing.T) {
 }
 
 func TestHandler_APIContributorsUnavailableWithoutStore(t *testing.T) {
-	h, err := buildHandler("", false, config.Profile{}, nil) // nil store
+	h, err := buildHandler("", false, config.Profile{}, nil, nil) // nil store
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestHandler_APIContributorsRequiresWindow(t *testing.T) {
 		GitHub: config.GitHubConfig{Orgs: []string{"consumerdirect"}},
 		Window: config.WindowConfig{BackfillStart: "2026-01", DefaultLengthMonths: 4},
 	}
-	h, err := buildHandler("", false, profile, cache.JSONStore{})
+	h, err := buildHandler("", false, profile, cache.JSONStore{}, nil)
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestHandler_APIContributorsRejectsBadSort(t *testing.T) {
 		GitHub: config.GitHubConfig{Orgs: []string{"consumerdirect"}},
 		Window: config.WindowConfig{BackfillStart: "2026-01", DefaultLengthMonths: 4},
 	}
-	h, err := buildHandler("", false, profile, cache.JSONStore{})
+	h, err := buildHandler("", false, profile, cache.JSONStore{}, nil)
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
@@ -220,7 +220,7 @@ func login0(d analyze.DevWindowMetrics) string {
 }
 
 func TestHandler_APIDevUnavailableWithoutStore(t *testing.T) {
-	h, err := buildHandler("", false, config.Profile{}, nil) // nil store
+	h, err := buildHandler("", false, config.Profile{}, nil, nil) // nil store
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestHandler_APIDevRequiresWindow(t *testing.T) {
 		GitHub: config.GitHubConfig{Orgs: []string{"consumerdirect"}},
 		Window: config.WindowConfig{BackfillStart: "2026-01", DefaultLengthMonths: 4},
 	}
-	h, err := buildHandler("", false, profile, cache.JSONStore{})
+	h, err := buildHandler("", false, profile, cache.JSONStore{}, nil)
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestHandler_APIDevNotFoundForUnknownLogin(t *testing.T) {
 		GitHub: config.GitHubConfig{Orgs: []string{"consumerdirect"}},
 		Window: config.WindowConfig{BackfillStart: "2026-01", DefaultLengthMonths: 4},
 	}
-	h, err := buildHandler("", false, profile, cache.JSONStore{})
+	h, err := buildHandler("", false, profile, cache.JSONStore{}, nil)
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}

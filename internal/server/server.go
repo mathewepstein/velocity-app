@@ -24,6 +24,7 @@ import (
 	"github.com/mathewepstein/velocity/internal/cache"
 	"github.com/mathewepstein/velocity/internal/config"
 	"github.com/mathewepstein/velocity/internal/incognito"
+	"github.com/mathewepstein/velocity/internal/scoring"
 	"github.com/mathewepstein/velocity/web"
 )
 
@@ -44,6 +45,10 @@ type Options struct {
 	// metrics.json routes still work); the serve command always supplies one.
 	Profile config.Profile
 	Store   cache.Store
+
+	// ScoreStore backs the /api/scoring/* story-points endpoints. Nil → those
+	// endpoints return 503; the serve command always supplies one.
+	ScoreStore *scoring.ScoreStore
 }
 
 // Serve starts the HTTP server and blocks until ctx is canceled.
@@ -65,7 +70,7 @@ func Serve(ctx context.Context, opts Options) error {
 	}
 	handler := opts.Handler
 	if handler == nil {
-		h, err := buildHandler(opts.SelfLogin, opts.Incognito, opts.Profile, opts.Store)
+		h, err := buildHandler(opts.SelfLogin, opts.Incognito, opts.Profile, opts.Store, opts.ScoreStore)
 		if err != nil {
 			return err
 		}
@@ -129,7 +134,7 @@ type pageData struct {
 // nav; empty string falls back to /dev/. When incog is true, the "Me" link
 // resolves through the persistent anonymization mapping so it points at the
 // alias slug rather than the real GitHub username.
-func buildHandler(selfLogin string, incog bool, profile config.Profile, store cache.Store) (http.Handler, error) {
+func buildHandler(selfLogin string, incog bool, profile config.Profile, store cache.Store, scores *scoring.ScoreStore) (http.Handler, error) {
 	mux := http.NewServeMux()
 
 	webFS, err := fs.Sub(web.FS, ".")
@@ -428,6 +433,9 @@ func buildHandler(selfLogin string, incog bool, profile config.Profile, store ca
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})
+
+	// Story-points engine endpoints (/api/scoring/*).
+	registerScoringRoutes(mux, profile, store, scores)
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")

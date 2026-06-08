@@ -40,7 +40,7 @@ var (
 // window. Medians (not means) are used throughout — cycle time is heavily
 // right-skewed, so a mean is dominated by a handful of long-lived tickets.
 type QAFlow struct {
-	MedianCycleHours   float64 `json:"median_cycle_hours"`    // FirstInProgress→DoneAt
+	MedianCycleHours   float64 `json:"median_cycle_hours"`    // active dev/review time (In Progress + Code Review); dormancy excluded
 	MedianReadyQAHours float64 `json:"median_ready_qa_hours"` // time a ticket sits in "Ready QA"
 	MedianInQAHours    float64 `json:"median_in_qa_hours"`    // time a ticket spends in "In QA"
 	BugsCaught         int     `json:"bugs_caught"`           // backward bounces out of "In QA" in window
@@ -133,6 +133,60 @@ func ReworkCount(iss cache.JiraIssue) int {
 	return n
 }
 
+// ReworkCountWithCommits is the de-noised rework count. A backward bounce
+// (review/QA → dev) is counted only when it reflects real redone work, judged
+// on TWO signals — a bounce counts if EITHER holds:
+//   - a commit linked to the issue landed in the bounce's window (from the
+//     bounce until the ticket next moves forward to QA-or-later, or Done), i.e.
+//     the dev actually pushed code after bouncing back; OR
+//   - the ticket dwelled in the review/QA stage at least minDwell before
+//     bouncing — long enough for a real review/QA pass to have happened.
+//
+// A bounce is dropped as noise only when BOTH fail: no code changed AND it
+// bounced near-instantly (a board misclick / status-toggle flurry, e.g.
+// CD-14390's 7-second Ready-QA↔Code-Review flips). Using both signals as
+// positive evidence avoids dropping genuine rework whose commit simply wasn't
+// linked to the issue key. commitTimes is this issue's linked commit timestamps
+// (any order); pass nil to fall back to the dwell test alone.
+func ReworkCountWithCommits(iss cache.JiraIssue, commitTimes []time.Time, minDwell time.Duration) int {
+	ts := statusTransitions(iss)
+	n := 0
+	for i, t := range ts {
+		from, to := workflowRank(t.From), workflowRank(t.To)
+		if !(from >= 2 && to >= 1 && to <= 2 && to < from) {
+			continue
+		}
+		// Window: from the bounce until the ticket next moves forward to
+		// QA-or-later (rank ≥ 3), else to Done (else the bounce instant).
+		windowEnd := t.At
+		if iss.DoneAt != nil {
+			windowEnd = *iss.DoneAt
+		}
+		for j := i + 1; j < len(ts); j++ {
+			if workflowRank(ts[j].To) >= 3 {
+				windowEnd = ts[j].At
+				break
+			}
+		}
+		commitInWindow := false
+		for _, c := range commitTimes {
+			if !c.Before(t.At) && !c.After(windowEnd) {
+				commitInWindow = true
+				break
+			}
+		}
+		// Dwell in the from-status = time since it was entered (prev transition).
+		var dwell time.Duration
+		if i > 0 {
+			dwell = t.At.Sub(ts[i-1].At)
+		}
+		if commitInWindow || dwell >= minDwell {
+			n++
+		}
+	}
+	return n
+}
+
 // QueueHours returns the hours an issue spent in QA-queue / waiting statuses
 // (currently "Ready QA") across its changelog. Exported for the story-points
 // band engine, which subtracts queue time from In-Progress→Done cycle time so a
@@ -140,6 +194,26 @@ func ReworkCount(iss cache.JiraIssue) int {
 // deterministic band. Returns 0 when the changelog has no queue time.
 func QueueHours(iss cache.JiraIssue) float64 {
 	return sumStatuses(statusDurationHours(iss), qaQueueStatuses)
+}
+
+// activeDevStatuses: the hands-on dev/review pipeline stages. Deliberately
+// excludes Ready QA (queue), In QA (QA's clock, not dev effort), rank-0 backlog
+// (Open / Selected / Blocked — dormancy after a deprioritization), and
+// "Reviewed" (used as a pre-dev limbo at CD, not post-code review).
+var activeDevStatuses = map[string]bool{
+	"In Progress":      true,
+	"Work in progress": true,
+	"Code Review":      true,
+}
+
+// ActiveDevHours sums the time an issue spent in active dev/review statuses
+// across its changelog (re-entries included). Unlike CycleHours — the
+// first-changelog-entry→Done wall-clock span, which counts backlog dormancy and
+// pre-dev limbo as effort — this is the honest hands-on cycle: a ticket that
+// was deprioritized back to the backlog for months contributes only the time it
+// was actually being worked. Returns 0 when the changelog shows no active time.
+func ActiveDevHours(iss cache.JiraIssue) float64 {
+	return sumStatuses(statusDurationHours(iss), activeDevStatuses)
 }
 
 // sumStatuses totals the durations for the statuses in set.
@@ -175,8 +249,8 @@ func deriveQAFlow(data *Loaded, start, end cache.Month) QAFlow {
 			continue
 		}
 		resolved++
-		if iss.CycleHours > 0 {
-			cycle = append(cycle, iss.CycleHours)
+		if c := ActiveDevHours(iss); c > 0 {
+			cycle = append(cycle, c)
 		}
 		dur := statusDurationHours(iss)
 		if h := sumStatuses(dur, qaQueueStatuses); h > 0 {
@@ -217,8 +291,8 @@ func medianCycleHoursInWindow(data *Loaded, start, end cache.Month) float64 {
 		if done == nil || !monthInRange(monthKey(*done), start, end) {
 			continue
 		}
-		if iss.CycleHours > 0 {
-			cyc = append(cyc, iss.CycleHours)
+		if c := ActiveDevHours(iss); c > 0 {
+			cyc = append(cyc, c)
 		}
 	}
 	return percentile(cyc, 50)

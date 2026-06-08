@@ -142,7 +142,7 @@ func loadCorpus() (config.Profile, cache.Store, *scoring.Extractor, error) {
 		store.Close()
 		return profile, nil, nil, err
 	}
-	return profile, store, scoring.NewExtractor(data, profile.Scoring.Normalize), nil
+	return profile, store, scoring.NewExtractor(data, profile.Scoring.Normalize, profile.StoryPoints.ReworkMinDwell()), nil
 }
 
 func scoreGenerateCmd() *cobra.Command {
@@ -333,7 +333,7 @@ cache only — no API calls, no LLM.`,
 				return err
 			}
 
-			ext := scoring.NewExtractor(data, profile.Scoring.Normalize)
+			ext := scoring.NewExtractor(data, profile.Scoring.Normalize, profile.StoryPoints.ReworkMinDwell())
 			ev, ok := ext.Extract(args[0])
 			if !ok {
 				return fmt.Errorf("ticket %s not found in cache", args[0])
@@ -398,7 +398,7 @@ and any external scorer consume the same bundle.`,
 				return err
 			}
 
-			ext := scoring.NewExtractor(data, profile.Scoring.Normalize)
+			ext := scoring.NewExtractor(data, profile.Scoring.Normalize, profile.StoryPoints.ReworkMinDwell())
 			ev, ok := ext.Extract(args[0])
 			if !ok {
 				return fmt.Errorf("ticket %s not found in cache", args[0])

@@ -27,16 +27,67 @@
     <div class="score-layout" id="score-layout">
       <section class="panel">
         <h2>Banded tickets <span class="meta" id="score-meta"></span></h2>
-        <div class="team-controls contrib-controls">
-          <span class="control-label">Filter</span>
-          <div class="control-group" id="score-filter" role="tablist" aria-label="Score filter">
-            <button data-filter="needs_insight" class="active">Needs insight</button>
-            <button data-filter="all">All</button>
+        <div class="score-filters" id="score-filters">
+          <div class="facet">
+            <span class="control-label">Flag</span>
+            <div class="control-group" data-facet="flag">
+              <button data-val="any">Any</button>
+              <button data-val="needs" class="active">Needs insight</button>
+              <button data-val="clean">Clean</button>
+            </div>
+          </div>
+          <div class="facet">
+            <span class="control-label">Confidence</span>
+            <div class="control-group" data-facet="confidence">
+              <button data-val="any" class="active">Any</button>
+              <button data-val="high">High</button>
+              <button data-val="medium">Med</button>
+              <button data-val="low">Low</button>
+            </div>
+          </div>
+          <div class="facet">
+            <span class="control-label">Band</span>
+            <div class="control-group" data-facet="band">
+              <button data-val="any" class="active">Any</button>
+              <button data-val="1">1</button>
+              <button data-val="2">2</button>
+              <button data-val="3">3</button>
+              <button data-val="5">5</button>
+              <button data-val="8">8</button>
+              <button data-val="13">13</button>
+            </div>
+          </div>
+          <div class="facet">
+            <span class="control-label">Posted</span>
+            <div class="control-group" data-facet="posted">
+              <button data-val="any" class="active">Any</button>
+              <button data-val="yes">Posted</button>
+              <button data-val="no">Unposted</button>
+            </div>
+          </div>
+          <div class="facet">
+            <span class="control-label">Jira SP</span>
+            <div class="control-group" data-facet="sp">
+              <button data-val="any" class="active">Any</button>
+              <button data-val="has">Has</button>
+              <button data-val="none">None</button>
+            </div>
+          </div>
+          <div class="facet">
+            <span class="control-label">Source</span>
+            <div class="control-group" data-facet="source">
+              <button data-val="any" class="active">Any</button>
+              <button data-val="auto">Auto</button>
+              <button data-val="human">Override</button>
+            </div>
           </div>
         </div>
 
         <div class="score-table" role="table" aria-label="Scored tickets">
           <div class="score-row score-head" role="row">
+            <div role="columnheader" class="check-col">
+              <input type="checkbox" id="select-all" aria-label="Select all filtered tickets" />
+            </div>
             <div role="columnheader">Ticket</div>
             <div role="columnheader" class="num">Band</div>
             <div role="columnheader" class="num">Points</div>
@@ -46,6 +97,15 @@
             <div role="columnheader"></div>
           </div>
           <div id="score-body"></div>
+        </div>
+
+        <div class="select-bar" id="select-bar" hidden>
+          <span class="select-count" id="select-count">0 selected</span>
+          <span class="spacer"></span>
+          <button type="button" class="copy-btn" id="clear-selection">Clear</button>
+          <button type="button" class="run-btn" id="post-selected" disabled
+            title="Jira write-back is enabled after the token write-scope check (Phase 5 steps 2–4).">Post
+            to Jira</button>
         </div>
       </section>
 

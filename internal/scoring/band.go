@@ -109,7 +109,7 @@ func Band(ev *TicketEvidence, cfg config.StoryPointsConfig) BandResult {
 	}
 
 	res.HardestAspectHint, res.SignalSummary = explain(ev, drivers, cycleDays, cell)
-	res.Confidence, res.NeedsInsight = judge(ev, cfg, points, straddle, thinking, len(drivers) == 0)
+	res.Confidence, res.NeedsInsight = judge(ev, cfg, points, straddle, thinking, raw, len(drivers) == 0)
 	return res
 }
 
@@ -135,7 +135,14 @@ func quadrant(cfg config.StoryPointsConfig, longCycle, highLOC bool) (float64, s
 //   - high band (≥5) driven by the quadrant with negligible thinking signal →
 //     likely inflated by cycle time (QA-queue latency, not real complexity);
 //   - generic-only driver (size, no thinking signal) on a non-trivial band.
-func judge(ev *TicketEvidence, cfg config.StoryPointsConfig, points int, straddle bool, thinking float64, noDrivers bool) (string, bool) {
+//
+// Confidence then distinguishes "high" from "medium": a high band is only
+// "high" when the thinking signal explains at least HighBandThinkingShare of
+// the raw effort. A band that cleared the inflation floor but is still mostly
+// quadrant base (calendar/LOC) is "medium" — shown, but not asserted with
+// confidence. This restores a real low/medium/high spread at the top, where the
+// engine previously had only binary low-or-high.
+func judge(ev *TicketEvidence, cfg config.StoryPointsConfig, points int, straddle bool, thinking, raw float64, noDrivers bool) (string, bool) {
 	switch {
 	case len(ev.PRs) == 0:
 		return "low", true
@@ -149,11 +156,15 @@ func judge(ev *TicketEvidence, cfg config.StoryPointsConfig, points int, straddl
 		return "low", true
 	}
 
-	// Confident when a real thinking signal is present and we're not on a boundary.
-	if thinking >= cfg.MinThinkingForHighBand && !straddle {
-		return "high", false
+	// Below the inflation floor on a low band → no strong claim either way.
+	if thinking < cfg.MinThinkingForHighBand || straddle {
+		return "medium", false
 	}
-	return "medium", false
+	// High band that's mostly quadrant base, not corroborated thinking → medium.
+	if points >= 5 && cfg.HighBandThinkingShare > 0 && raw > 0 && thinking < cfg.HighBandThinkingShare*raw {
+		return "medium", false
+	}
+	return "high", false
 }
 
 // explain builds the hardest-aspect hint + the one-line signal summary.

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -103,6 +104,30 @@ type StoryPointsConfig struct {
 	// creates a flag pileup — worse than the uncapped distribution. Exposed as a
 	// tunable for configs that want it, but off by default.
 	MaxThinkingBonus float64 `toml:"max_thinking_bonus"`
+
+	// ReworkMinDwellMins de-noises the rework signal: a backward review/QA→dev
+	// bounce counts as real rework only if a commit landed in its window OR the
+	// ticket dwelled in the review/QA stage at least this many minutes before
+	// bouncing. Below it, a commit-less bounce is treated as status-toggle noise
+	// (a board misclick / instantaneous flip). Default 5.
+	ReworkMinDwellMins float64 `toml:"rework_min_dwell_mins"`
+
+	// HighBandThinkingShare gates "high" confidence on a high band (points ≥ 5):
+	// the thinking-signal contribution must explain at least this fraction of the
+	// raw effort, otherwise the band is mostly quadrant base (calendar/LOC) and
+	// confidence is downgraded to "medium" rather than overclaiming "high". This
+	// is what gives the engine a real low/medium/high spread instead of the
+	// binary low-or-high it had at the top. Default 0.5 (thinking must be the
+	// majority). An unset value is filled to the default by the config merge; a
+	// negative value disables the share test (legacy: every above-floor band is
+	// "high").
+	HighBandThinkingShare float64 `toml:"high_band_thinking_share"`
+}
+
+// ReworkMinDwell returns ReworkMinDwellMins as a duration for the rework
+// de-noiser (analyze.ReworkCountWithCommits).
+func (c StoryPointsConfig) ReworkMinDwell() time.Duration {
+	return time.Duration(c.ReworkMinDwellMins * float64(time.Minute))
 }
 
 // DevIdentity unifies one developer's GitHub identifiers and Jira accountId so
@@ -396,6 +421,8 @@ func DefaultStoryPointsConfig() StoryPointsConfig {
 		StraddleFraction:       0.15,
 		MinThinkingForHighBand: 1.0,
 		MaxThinkingBonus:       0, // disabled by default — see field doc
+		ReworkMinDwellMins:     5,
+		HighBandThinkingShare:  0.5,
 	}
 }
 
@@ -892,6 +919,12 @@ func (c *Config) applyDefaults() {
 	}
 	if p.StoryPoints.MinThinkingForHighBand == 0 {
 		p.StoryPoints.MinThinkingForHighBand = spDef.MinThinkingForHighBand
+	}
+	if p.StoryPoints.ReworkMinDwellMins == 0 {
+		p.StoryPoints.ReworkMinDwellMins = spDef.ReworkMinDwellMins
+	}
+	if p.StoryPoints.HighBandThinkingShare == 0 {
+		p.StoryPoints.HighBandThinkingShare = spDef.HighBandThinkingShare
 	}
 	// MaxThinkingBonus has no fill: its zero value (disabled) is the intended
 	// default, like the dump/churn toggles in CodeImpactConfig.

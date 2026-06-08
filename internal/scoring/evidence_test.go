@@ -96,14 +96,14 @@ func defaultNorm() config.NormalizeConfig {
 }
 
 func TestExtract_NotFound(t *testing.T) {
-	ext := NewExtractor(fixture(), defaultNorm())
+	ext := NewExtractor(fixture(), defaultNorm(), 5*time.Minute)
 	if _, ok := ext.Extract("CD-999"); ok {
 		t.Fatal("expected CD-999 to be absent")
 	}
 }
 
 func TestExtract_JiraAndDerivedSignals(t *testing.T) {
-	ext := NewExtractor(fixture(), defaultNorm())
+	ext := NewExtractor(fixture(), defaultNorm(), 5*time.Minute)
 	ev, ok := ext.Extract("cd-100") // case-insensitive
 	if !ok {
 		t.Fatal("CD-100 not found")
@@ -123,7 +123,7 @@ func TestExtract_JiraAndDerivedSignals(t *testing.T) {
 }
 
 func TestExtract_PRRollups(t *testing.T) {
-	ext := NewExtractor(fixture(), defaultNorm())
+	ext := NewExtractor(fixture(), defaultNorm(), 5*time.Minute)
 	ev, _ := ext.Extract("CD-100")
 
 	if len(ev.PRs) != 1 {
@@ -158,7 +158,7 @@ func TestExtract_PRRollups(t *testing.T) {
 }
 
 func TestExtract_TouchedAreaRisk(t *testing.T) {
-	ext := NewExtractor(fixture(), defaultNorm())
+	ext := NewExtractor(fixture(), defaultNorm(), 5*time.Minute)
 	ev, _ := ext.Extract("CD-100")
 	// middleware.go is touched by 6 PRs total (>= floor 5) → hot.
 	found := false
@@ -182,7 +182,7 @@ func TestExtract_NoPRsStillReturns(t *testing.T) {
 		Summary: "Doc-only ticket",
 		Created: time.Now(),
 	})
-	ext := NewExtractor(data, defaultNorm())
+	ext := NewExtractor(data, defaultNorm(), 5*time.Minute)
 	ev, ok := ext.Extract("CD-200")
 	if !ok {
 		t.Fatal("CD-200 should be returned (Jira-only evidence)")

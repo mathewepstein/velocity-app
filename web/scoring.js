@@ -11,39 +11,65 @@
 (() => {
   'use strict';
 
-  const { escapeHTML, fmtDays, setActive } = window.VUtil;
+  const { escapeHTML, fmtDays } = window.VUtil;
 
   // Page size for the rendered list — the corpus is ~8k tickets, so we fetch the
-  // whole filtered set once (true count) but only paint a page at a time, with a
-  // "Load more" control. needs_insight rows sort first server-side.
+  // whole set once and filter/paginate client-side: faceted filters narrow it,
+  // a "Load more" control paints a page at a time.
   const PAGE_SIZE = 250;
 
+  // Client-side facets over the fetched rows. Defaults reproduce the original
+  // review queue (flagged only); everything else starts at "any".
   const state = {
-    rows:     [],               // full filtered set of ScoreRecords from /api/scoring/list
-    shown:    PAGE_SIZE,        // how many rows are currently painted
-    filter:   'needs_insight',  // needs_insight | all
-    selected: null,             // ticket key whose detail is open
+    all:      [],          // full set of ScoreRecords from /api/scoring/list
+    shown:    PAGE_SIZE,   // how many filtered rows are currently painted
+    facets: {
+      flag:       'needs', // any | needs | clean
+      confidence: 'any',   // any | high | medium | low
+      band:       'any',   // any | 1 | 2 | 3 | 5 | 8 | 13 (matches points)
+      posted:     'any',   // any | yes | no
+      sp:         'any',   // any | has | none  (existing Jira story points)
+      source:     'any',   // any | auto | human
+    },
+    selected:     null,          // ticket key whose detail is open
+    selectedKeys: new Set(),     // tickets checked for a bulk action
   };
 
+  // filteredRows applies the active facets to the fetched set.
+  function filteredRows() {
+    const f = state.facets;
+    return state.all.filter((r) => {
+      if (f.flag === 'needs' && !r.needs_insight) return false;
+      if (f.flag === 'clean' && r.needs_insight) return false;
+      if (f.confidence !== 'any' && r.confidence !== f.confidence) return false;
+      if (f.band !== 'any' && r.points !== Number(f.band)) return false;
+      if (f.posted === 'yes' && !r.posted_to_jira) return false;
+      if (f.posted === 'no' && r.posted_to_jira) return false;
+      if (f.sp === 'has' && !(r.existing_story_points > 0)) return false;
+      if (f.sp === 'none' && r.existing_story_points > 0) return false;
+      if (f.source !== 'any' && r.source !== f.source) return false;
+      return true;
+    });
+  }
+
   async function boot() {
-    wireFilterHandlers();
+    wireFacetHandlers();
     wireGenerator();
     wireDetailClose();
+    wireSelection();
     await loadList();
   }
 
   async function loadList() {
     document.getElementById('score-summary').textContent = 'Loading…';
     try {
-      // Fetch the whole filtered set (no limit) so the count is honest; paint a
-      // page at a time client-side via the Load-more control.
-      const res = await fetch(
-        `/api/scoring/list?filter=${state.filter}`,
-        { cache: 'no-store' },
-      );
+      // Fetch the whole set once (no server filter); facets narrow it
+      // client-side, the Load-more control paginates the result.
+      const res = await fetch('/api/scoring/list', { cache: 'no-store' });
       if (!res.ok) throw new Error(res.statusText);
-      state.rows = await res.json();
+      state.all = await res.json();
       state.shown = PAGE_SIZE;
+      state.selectedKeys.clear();
     } catch (err) {
       console.error(err);
       document.getElementById('loading').hidden = true;
@@ -54,17 +80,72 @@
     document.getElementById('error').hidden = true;
     renderTable();
     renderSummary();
+    renderSelectBar();
     renderFooter();
   }
 
-  function wireFilterHandlers() {
-    document.getElementById('score-filter').addEventListener('click', (e) => {
-      const btn = e.target.closest('button');
-      if (!btn || btn.dataset.filter === state.filter) return;
-      state.filter = btn.dataset.filter;
-      setActive('score-filter', btn);
-      loadList();
+  function wireFacetHandlers() {
+    document.getElementById('score-filters').addEventListener('click', (e) => {
+      const btn = e.target.closest('.control-group button');
+      if (!btn) return;
+      const group = btn.closest('.control-group');
+      const facet = group.dataset.facet;
+      const val = btn.dataset.val;
+      if (state.facets[facet] === val) return;
+      state.facets[facet] = val;
+      group.querySelectorAll('button').forEach((b) => b.classList.toggle('active', b === btn));
+      state.shown = PAGE_SIZE;          // reset pagination on any filter change
+      state.selectedKeys.clear();       // selection clears on filter change (plan)
+      renderTable();
+      renderSummary();
+      renderSelectBar();
     });
+  }
+
+  // ---- Selection / bulk action bar ----
+
+  function wireSelection() {
+    document.getElementById('select-all').addEventListener('change', (e) => {
+      const checked = e.target.checked;
+      filteredRows().forEach((r) => {
+        if (checked) state.selectedKeys.add(r.ticket);
+        else state.selectedKeys.delete(r.ticket);
+      });
+      renderTable();
+      renderSelectBar();
+    });
+    document.getElementById('clear-selection').addEventListener('click', () => {
+      state.selectedKeys.clear();
+      renderTable();
+      renderSelectBar();
+    });
+    // #post-selected stays disabled until the Jira write lands (steps 2–4).
+  }
+
+  function toggleSelect(key, checked, rowEl) {
+    if (checked) state.selectedKeys.add(key);
+    else state.selectedKeys.delete(key);
+    if (rowEl) rowEl.classList.toggle('checked', checked);
+    syncSelectAllState();
+    renderSelectBar();
+  }
+
+  // syncSelectAllState reflects the header checkbox against the filtered set:
+  // checked when all are selected, indeterminate when some are.
+  function syncSelectAllState() {
+    const rows = filteredRows();
+    const sel = rows.reduce((n, r) => n + (state.selectedKeys.has(r.ticket) ? 1 : 0), 0);
+    const cb = document.getElementById('select-all');
+    cb.checked = rows.length > 0 && sel === rows.length;
+    cb.indeterminate = sel > 0 && sel < rows.length;
+  }
+
+  function renderSelectBar() {
+    const bar = document.getElementById('select-bar');
+    const n = state.selectedKeys.size;
+    bar.hidden = n === 0;
+    if (n) document.getElementById('select-count').textContent = `${n} selected`;
+    syncSelectAllState();
   }
 
   function wireGenerator() {
@@ -103,37 +184,54 @@
   function renderTable() {
     const body = document.getElementById('score-body');
     body.innerHTML = '';
-    if (!state.rows.length) {
+    const rows = filteredRows();
+    syncSelectAllState();
+    if (!rows.length) {
       const empty = document.createElement('div');
       empty.className = 'score-empty';
-      empty.textContent = state.filter === 'needs_insight'
-        ? 'No flagged tickets — nothing needs an insight pass.'
+      empty.textContent = state.all.length
+        ? 'No tickets match the current filters.'
         : 'No scored tickets yet. Run the generator to band the corpus.';
       body.appendChild(empty);
       return;
     }
-    state.rows.slice(0, state.shown).forEach(row => body.appendChild(rowFor(row)));
-    if (state.rows.length > state.shown) {
+    rows.slice(0, state.shown).forEach(row => body.appendChild(rowFor(row)));
+    if (rows.length > state.shown) {
       const more = document.createElement('button');
       more.type = 'button';
       more.className = 'copy-btn load-more';
-      const remaining = state.rows.length - state.shown;
+      const remaining = rows.length - state.shown;
       more.textContent = `Load ${Math.min(PAGE_SIZE, remaining)} more (${remaining} remaining)`;
       more.addEventListener('click', () => {
         state.shown += PAGE_SIZE;
         renderTable();
+        renderSummary();
       });
       body.appendChild(more);
     }
   }
 
   function rowFor(rec) {
-    const row = document.createElement('button');
-    row.type = 'button';
+    const row = document.createElement('div');
     row.className = 'score-row';
     row.setAttribute('role', 'row');
+    row.tabIndex = 0;
     if (state.selected === rec.ticket) row.classList.add('selected');
-    row.addEventListener('click', () => openDetail(rec.ticket, row));
+    if (state.selectedKeys.has(rec.ticket)) row.classList.add('checked');
+    const open = () => openDetail(rec.ticket, row);
+    row.addEventListener('click', open);
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); open(); }
+    });
+
+    const check = cell('', 'check-col');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = state.selectedKeys.has(rec.ticket);
+    cb.setAttribute('aria-label', `Select ${rec.ticket}`);
+    cb.addEventListener('click', (e) => e.stopPropagation()); // don't open the detail
+    cb.addEventListener('change', () => toggleSelect(rec.ticket, cb.checked, row));
+    check.appendChild(cb);
 
     const ticket = cell(rec.ticket, 'ticket');
     const band = numCell(rec.band || String(rec.points));
@@ -147,7 +245,7 @@
     if (rec.posted_to_jira) posted.appendChild(badge('Posted', 'posted-badge'));
     if (rec.source === 'human') posted.appendChild(badge('Override', 'override-badge'));
 
-    [ticket, band, points, confidence, flag, jiraSP, posted].forEach(c => row.appendChild(c));
+    [check, ticket, band, points, confidence, flag, jiraSP, posted].forEach(c => row.appendChild(c));
     return row;
   }
 
@@ -395,12 +493,12 @@
   }
 
   function renderSummary() {
-    const n = state.rows.length;
-    const flagged = state.rows.filter(r => r.needs_insight).length;
-    const label = state.filter === 'needs_insight' ? 'flagged tickets' : 'scored tickets';
-    let text = `${n} ${label}`;
-    if (state.filter === 'all' && flagged) text += ` · ${flagged} need insight`;
-    if (n > state.shown) text += ` (showing ${state.shown})`;
+    const total = state.all.length;
+    const rows = filteredRows();
+    const n = rows.length;
+    let text = `${n} ticket${n === 1 ? '' : 's'}`;
+    if (n !== total) text += ` of ${total}`;
+    if (n > state.shown) text += ` · showing ${state.shown}`;
     document.getElementById('score-summary').textContent = text;
     document.getElementById('score-meta').textContent = `scorer velocity-band-v1`;
   }
@@ -408,7 +506,7 @@
   function renderFooter() {
     // Newest scored_at across the loaded rows = a reasonable "as of" stamp.
     let latest = null;
-    state.rows.forEach(r => {
+    state.all.forEach(r => {
       if (r.scored_at && (!latest || r.scored_at > latest)) latest = r.scored_at;
     });
     if (latest) {

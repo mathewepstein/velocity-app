@@ -136,8 +136,9 @@ type DevWindowMetrics struct {
 	Score              *ContributorScore  `json:"score,omitempty"`
 	Rating             *EloRating         `json:"rating,omitempty"`
 	Projects           []ProjectShare     `json:"projects,omitempty"`
-	// MedianCycleHours is this dev's median ticket cycle time (FirstInProgress→
-	// DoneAt) over tickets resolved in the window. Display-only; never scored.
+	// MedianCycleHours is this dev's median active dev/review time (time in
+	// In Progress + Code Review, dormancy excluded — see ActiveDevHours) over
+	// tickets resolved in the window. Display-only; never scored.
 	MedianCycleHours float64 `json:"median_cycle_hours,omitempty"`
 
 	// effectiveFiles is the generated-file-dampened cardinality of the

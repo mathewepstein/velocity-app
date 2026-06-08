@@ -55,26 +55,28 @@ func TestStatusDurationHoursOpenIssue(t *testing.T) {
 }
 
 func TestDeriveQAFlow(t *testing.T) {
-	mk := func(key, done string, cycle float64, cl []cache.StatusTransition) cache.JiraIssue {
+	mk := func(key, done string, cl []cache.StatusTransition) cache.JiraIssue {
 		d := mustTime(done)
-		return cache.JiraIssue{Key: key, DoneAt: &d, CycleHours: cycle, Changelog: cl}
+		return cache.JiraIssue{Key: key, DoneAt: &d, Changelog: cl}
 	}
 	data := &Loaded{Issues: []cache.JiraIssue{
-		// In-window, passed QA cleanly.
-		mk("CD-1", "2026-02-10T00:00:00Z", 100, []cache.StatusTransition{
-			st("2026-02-08T00:00:00Z", "In Progress", "Ready QA"), // 24h Ready QA
-			st("2026-02-09T00:00:00Z", "Ready QA", "In QA"),       // 24h In QA → DoneAt
+		// In-window, passed QA cleanly. Active dev = 24h (In Progress).
+		mk("CD-1", "2026-02-10T00:00:00Z", []cache.StatusTransition{
+			st("2026-02-06T00:00:00Z", "Selected for Development", "In Progress"), // 24h In Progress
+			st("2026-02-07T00:00:00Z", "In Progress", "Ready QA"),                 // 24h Ready QA
+			st("2026-02-08T00:00:00Z", "Ready QA", "In QA"),                       // 48h In QA → DoneAt
 			st("2026-02-10T00:00:00Z", "In QA", "Done"),
 		}),
-		// In-window, QA caught a bug (In QA → In Progress).
-		mk("CD-2", "2026-02-20T00:00:00Z", 200, []cache.StatusTransition{
+		// In-window, QA caught a bug (In QA → In Progress). Active dev = 60h (48 + 12 re-entry).
+		mk("CD-2", "2026-02-20T00:00:00Z", []cache.StatusTransition{
+			st("2026-02-16T00:00:00Z", "Selected for Development", "In Progress"), // 48h In Progress
 			st("2026-02-18T00:00:00Z", "In Progress", "In QA"),
-			st("2026-02-19T00:00:00Z", "In QA", "In Progress"), // bounce in window
+			st("2026-02-19T00:00:00Z", "In QA", "In Progress"), // bounce in window; +12h In Progress
 			st("2026-02-19T12:00:00Z", "In Progress", "In QA"),
 			st("2026-02-20T00:00:00Z", "In QA", "Done"),
 		}),
 		// Out of window — must not count.
-		mk("CD-3", "2026-09-01T00:00:00Z", 999, []cache.StatusTransition{
+		mk("CD-3", "2026-09-01T00:00:00Z", []cache.StatusTransition{
 			st("2026-08-31T00:00:00Z", "In QA", "Code Review"), // bounce out of window
 		}),
 	}}
@@ -87,8 +89,8 @@ func TestDeriveQAFlow(t *testing.T) {
 	if qf.BugsCaught != 1 {
 		t.Errorf("BugsCaught = %d, want 1 (CD-2's In QA→In Progress; CD-3 out of window)", qf.BugsCaught)
 	}
-	if qf.MedianCycleHours != 150 {
-		t.Errorf("MedianCycleHours = %v, want 150 (median of 100,200)", qf.MedianCycleHours)
+	if qf.MedianCycleHours != 42 {
+		t.Errorf("MedianCycleHours = %v, want 42 (median active dev of 24,60)", qf.MedianCycleHours)
 	}
 	if qf.MedianReadyQAHours <= 0 {
 		t.Errorf("MedianReadyQAHours = %v, want > 0 (CD-1 sat in Ready QA)", qf.MedianReadyQAHours)

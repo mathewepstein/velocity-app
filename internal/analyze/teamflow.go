@@ -23,7 +23,9 @@ type TeamFlow struct {
 
 // TeamFlowMonth is one month of team-wide flow. Counts are bucketed by the
 // event's own timestamp (created/resolved/merged); MedianCycleHours is the
-// median over tickets RESOLVED that month (heavily skewed → median not mean).
+// median active dev/review time (In Progress + Code Review, dormancy excluded —
+// see ActiveDevHours) over tickets RESOLVED that month (heavily skewed → median
+// not mean).
 type TeamFlowMonth struct {
 	Month                string  `json:"month"`
 	IssuesCreated        int     `json:"issues_created"`
@@ -92,8 +94,8 @@ func deriveTeamFlow(data *Loaded, histStart, current, curStart, curEnd cache.Mon
 		if hasClaudeLabel(iss.Labels) {
 			rows[i].ClaudeIssuesResolved++
 		}
-		if iss.CycleHours > 0 {
-			cycleByMonth[rows[i].Month] = append(cycleByMonth[rows[i].Month], iss.CycleHours)
+		if c := ActiveDevHours(iss); c > 0 {
+			cycleByMonth[rows[i].Month] = append(cycleByMonth[rows[i].Month], c)
 		}
 	}
 	for _, pr := range data.PRs {
@@ -129,11 +131,11 @@ func deriveClaudeCut(data *Loaded, start, end cache.Month) ClaudeCut {
 		if isClaude {
 			claudeResolved++
 		}
-		if iss.CycleHours > 0 {
+		if c := ActiveDevHours(iss); c > 0 {
 			if isClaude {
-				claudeCyc = append(claudeCyc, iss.CycleHours)
+				claudeCyc = append(claudeCyc, c)
 			} else {
-				otherCyc = append(otherCyc, iss.CycleHours)
+				otherCyc = append(otherCyc, c)
 			}
 		}
 	}

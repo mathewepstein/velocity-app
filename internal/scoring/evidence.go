@@ -120,6 +120,8 @@ type Extractor struct {
 	issueByKey map[string]*cache.JiraIssue
 	prsByKey   map[string][]*cache.GitHubPR // ticket key -> PRs referencing it
 	reviewsByPR map[string][]cache.GitHubReview
+	commitTimesByKey map[string][]time.Time // ticket key -> linked commit timestamps (for de-noised rework)
+	reworkMinDwell   time.Duration  // rescue threshold for the rework de-noiser (StoryPoints.ReworkMinDwell)
 	fileFreq   map[string]int // corpus-wide count of PRs touching each path
 	hotCutoff  int            // file-frequency threshold for "hot"
 }
@@ -133,23 +135,35 @@ func BuildExtractor(profile config.Profile, store cache.Store, now time.Time) (*
 	if err != nil {
 		return nil, err
 	}
-	return NewExtractor(data, profile.Scoring.Normalize), nil
+	return NewExtractor(data, profile.Scoring.Normalize, profile.StoryPoints.ReworkMinDwell()), nil
 }
 
 // NewExtractor builds the reverse indices over data. norm supplies the
 // generated-file patterns used to compute net (non-generated) LOC, matching the
-// code_impact normalizer.
-func NewExtractor(data *analyze.Loaded, norm config.NormalizeConfig) *Extractor {
+// code_impact normalizer. reworkMinDwell tunes the rework de-noiser (a
+// commit-less backward bounce shorter than this is treated as toggle noise).
+func NewExtractor(data *analyze.Loaded, norm config.NormalizeConfig, reworkMinDwell time.Duration) *Extractor {
 	e := &Extractor{
-		norm:        norm,
-		issueByKey:  make(map[string]*cache.JiraIssue, len(data.Issues)),
-		prsByKey:    make(map[string][]*cache.GitHubPR),
-		reviewsByPR: make(map[string][]cache.GitHubReview),
-		fileFreq:    make(map[string]int),
+		norm:             norm,
+		issueByKey:       make(map[string]*cache.JiraIssue, len(data.Issues)),
+		prsByKey:         make(map[string][]*cache.GitHubPR),
+		reviewsByPR:      make(map[string][]cache.GitHubReview),
+		commitTimesByKey: make(map[string][]time.Time),
+		reworkMinDwell:   reworkMinDwell,
+		fileFreq:         make(map[string]int),
 	}
 	for i := range data.Issues {
 		iss := &data.Issues[i]
 		e.issueByKey[strings.ToUpper(iss.Key)] = iss
+	}
+	// Commit timestamps per issue key — the primary signal for de-noising rework
+	// (a backward bounce is real if code landed after it).
+	for i := range data.Commits {
+		c := &data.Commits[i]
+		for _, k := range c.IssueKeys {
+			ku := strings.ToUpper(k)
+			e.commitTimesByKey[ku] = append(e.commitTimesByKey[ku], c.Committed)
+		}
 	}
 	for i := range data.PRs {
 		pr := &data.PRs[i]
@@ -207,7 +221,7 @@ func (e *Extractor) Extract(ticketKey string) (*TicketEvidence, bool) {
 		ExistingStoryPoints: iss.StoryPoints,
 		CycleHours:          iss.CycleHours,
 		StatusFlips:         iss.StatusFlips,
-		ReworkCount:         analyze.ReworkCount(*iss),
+		ReworkCount:         analyze.ReworkCountWithCommits(*iss, e.commitTimesByKey[ku], e.reworkMinDwell),
 		// Active cycle = In-Progress→Done minus QA-queue/wait time, so a long
 		// Ready-QA queue (dead time at CD, ~66h median) doesn't inflate the band.
 		// Only meaningful when the changelog gave us a real cycle; left 0 when
@@ -312,17 +326,15 @@ func queueHoursOf(iss *cache.JiraIssue) float64 {
 	return analyze.QueueHours(*iss)
 }
 
-// activeCycleHoursOf returns cycle minus queue, floored at 0. Zero when the
-// changelog gave no In-Progress→Done cycle (band falls back to Created→Resolved).
+// activeCycleHoursOf returns the time the issue spent in active dev/review
+// statuses (In Progress / Work in progress / Code Review), summed across
+// re-entries. This is dormancy-free by construction: backlog deprioritization
+// (Open/Selected/Blocked), QA queue, and pre-dev "Reviewed" limbo are excluded,
+// so a ticket that sat for months no longer inflates the band's cycle axis.
+// Zero when the changelog shows no active dev time (band falls back to
+// CycleHours, then Created→Resolved).
 func activeCycleHoursOf(iss *cache.JiraIssue) float64 {
-	if iss.CycleHours <= 0 {
-		return 0
-	}
-	active := iss.CycleHours - analyze.QueueHours(*iss)
-	if active < 0 {
-		active = 0
-	}
-	return active
+	return analyze.ActiveDevHours(*iss)
 }
 
 // netLOC sums additions+deletions over non-generated files using per-file

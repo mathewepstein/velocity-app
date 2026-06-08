@@ -38,14 +38,14 @@ type CacheConfig struct {
 
 // Profile groups everything about one Atlassian + GitHub setup.
 type Profile struct {
-	Name    string        `toml:"name"`
-	Jira    JiraConfig    `toml:"jira"`
-	GitHub  GitHubConfig  `toml:"github"`
-	Window  WindowConfig  `toml:"window"`
-	Surge   SurgeConfig   `toml:"surge"`
-	UI      UIConfig      `toml:"ui"`
-	Devs       []DevIdentity     `toml:"devs,omitempty"`
-	Scoring    ScoringConfig     `toml:"scoring"`
+	Name        string            `toml:"name"`
+	Jira        JiraConfig        `toml:"jira"`
+	GitHub      GitHubConfig      `toml:"github"`
+	Window      WindowConfig      `toml:"window"`
+	Surge       SurgeConfig       `toml:"surge"`
+	UI          UIConfig          `toml:"ui"`
+	Devs        []DevIdentity     `toml:"devs,omitempty"`
+	Scoring     ScoringConfig     `toml:"scoring"`
 	StoryPoints StoryPointsConfig `toml:"storypoints"`
 }
 
@@ -122,6 +122,40 @@ type StoryPointsConfig struct {
 	// negative value disables the share test (legacy: every above-floor band is
 	// "high").
 	HighBandThinkingShare float64 `toml:"high_band_thinking_share"`
+
+	// ReworkCountCap / ReviewRoundCap saturate the rework and review-round
+	// contributions: the count used for the weight is capped here, so the 1st and
+	// 2nd bounce carry full signal but a runaway 7th barely moves the band. This
+	// is the per-signal alternative to the global MaxThinkingBonus (which pinned
+	// capped tickets to one raw value and piled them into a straddle zone). The
+	// cap is per-signal and integer, so normal-path sums stay on clean Fibonacci
+	// steps. 0 disables the cap for that signal (legacy linear count·weight).
+	// Defaults: rework 3, review 4.
+	ReworkCountCap int `toml:"rework_count_cap"`
+	ReviewRoundCap int `toml:"review_round_cap"`
+
+	// SmallDiffLOCFloor / SmallDiffBonusScale apply a size sanity-floor: below the
+	// floor (net LOC), a change can't claim the full *rework* bonus — a 1-line
+	// edit that bounced many times is flaky-fix churn, not big work. The rework
+	// contribution is scaled by SmallDiffBonusScale when NetLOC is in
+	// (0, SmallDiffLOCFloor). Risk, review-round, and deep-thread credit are NOT
+	// scaled: a tiny diff in a hot file is genuinely risky, and a small diff with
+	// real approach debate is legitimately hard (the locked high-risk-small-fix
+	// anchor → 5). SmallDiffLOCFloor 0 disables the floor. Defaults: floor 20 LOC,
+	// scale 0.5.
+	SmallDiffLOCFloor   int     `toml:"small_diff_loc_floor"`
+	SmallDiffBonusScale float64 `toml:"small_diff_bonus_scale"`
+
+	// SplitThreshold implements the legend literally at the top of the scale: a
+	// true 13 is the band you're *least* sure is a single unit of work, so a
+	// silent high-confidence 13 is nearly a contradiction. When the raw effort of
+	// a top-band ticket reaches this, the band stays 13 but is flagged
+	// NeedsInsight ("effort exceeds a single-ticket scale — likely should have
+	// been split; confirm scope") and confidence is capped at "medium" — routing
+	// genuine monsters (raw ≫ 13) to a scope/split check rather than rubber-
+	// stamping them. Set well above the 13 floor so only clearly-oversized work
+	// trips it, not every defensible-contention 13. 0 disables. Default 18.
+	SplitThreshold float64 `toml:"split_threshold"`
 }
 
 // ReworkMinDwell returns ReworkMinDwellMins as a duration for the rework
@@ -423,6 +457,11 @@ func DefaultStoryPointsConfig() StoryPointsConfig {
 		MaxThinkingBonus:       0, // disabled by default — see field doc
 		ReworkMinDwellMins:     5,
 		HighBandThinkingShare:  0.5,
+		ReworkCountCap:         3,
+		ReviewRoundCap:         4,
+		SmallDiffLOCFloor:      20,
+		SmallDiffBonusScale:    0.5,
+		SplitThreshold:         18,
 	}
 }
 
@@ -925,6 +964,21 @@ func (c *Config) applyDefaults() {
 	}
 	if p.StoryPoints.HighBandThinkingShare == 0 {
 		p.StoryPoints.HighBandThinkingShare = spDef.HighBandThinkingShare
+	}
+	if p.StoryPoints.ReworkCountCap == 0 {
+		p.StoryPoints.ReworkCountCap = spDef.ReworkCountCap
+	}
+	if p.StoryPoints.ReviewRoundCap == 0 {
+		p.StoryPoints.ReviewRoundCap = spDef.ReviewRoundCap
+	}
+	if p.StoryPoints.SmallDiffLOCFloor == 0 {
+		p.StoryPoints.SmallDiffLOCFloor = spDef.SmallDiffLOCFloor
+	}
+	if p.StoryPoints.SmallDiffBonusScale == 0 {
+		p.StoryPoints.SmallDiffBonusScale = spDef.SmallDiffBonusScale
+	}
+	if p.StoryPoints.SplitThreshold == 0 {
+		p.StoryPoints.SplitThreshold = spDef.SplitThreshold
 	}
 	// MaxThinkingBonus has no fill: its zero value (disabled) is the intended
 	// default, like the dump/churn toggles in CodeImpactConfig.

@@ -326,6 +326,11 @@
     }
     body.appendChild(head);
 
+    // Why it was flagged, when the engine couldn't confidently band it.
+    if (band.needs_insight && band.insight_reason) {
+      body.appendChild(field('Why flagged', band.insight_reason));
+    }
+
     // Quadrant + drivers + signal summary.
     body.appendChild(field('Quadrant', `${band.quadrant_cell} · prior band ${band.quadrant_band}`));
     if (band.drivers && band.drivers.length) {

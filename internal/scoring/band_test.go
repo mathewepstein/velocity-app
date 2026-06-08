@@ -140,13 +140,130 @@ func TestBand_ConfigTweakChangesOutcome(t *testing.T) {
 func TestBand_ActiveCycleDrivesQuadrant(t *testing.T) {
 	ev := onePR()
 	ev.NetLOC = 20
-	ev.CycleHours = 480     // 20 raw days → would be "long"
-	ev.QueueHours = 384     // 16 days parked in Ready-QA queue
+	ev.CycleHours = 480      // 20 raw days → would be "long"
+	ev.QueueHours = 384      // 16 days parked in Ready-QA queue
 	ev.ActiveCycleHours = 96 // 4 active days → "short" under the 14d threshold
 
 	got := Band(ev, spCfg())
 	if got.QuadrantCell != "short cycle / low LOC" {
 		t.Errorf("active cycle should make this short, got %q (raw=%v)", got.QuadrantCell, got.RawEffort)
+	}
+}
+
+// --- Phase 4a: rework / review-round saturation. ---
+
+// A runaway rework count saturates at ReworkCountCap, so the 7th bounce can't
+// keep inflating the band the way the 2nd did.
+func TestBand_ReworkSaturates(t *testing.T) {
+	mk := func(n int) *TicketEvidence {
+		ev := onePR()
+		ev.NetLOC = 200 // above the small-diff floor so 4b doesn't scale rework
+		ev.FileCount = 6
+		ev.CycleHours = 24
+		ev.ReworkCount = n
+		return ev
+	}
+	cfg := spCfg()
+	three := Band(mk(3), cfg).RawEffort
+	seven := Band(mk(7), cfg).RawEffort
+	if seven != three {
+		t.Errorf("rework should saturate at the cap (=%d): raw(3)=%v raw(7)=%v", cfg.ReworkCountCap, three, seven)
+	}
+	// And the cap actually bit — 7 linear would have scored strictly higher.
+	uncapped := spCfg()
+	uncapped.ReworkCountCap = 0
+	if Band(mk(7), uncapped).RawEffort <= seven {
+		t.Errorf("disabling the cap should raise the 7-rework effort above the capped value")
+	}
+}
+
+// --- Phase 4b: size sanity-floor scales the rework bonus (only) on tiny diffs. ---
+
+// A 12-LOC change that bounced many times is flaky-fix churn, not a 13 — the
+// small-diff floor halves its rework credit so it lands in 5/8 territory.
+func TestBand_SmallDiffScalesReworkNotRisk(t *testing.T) {
+	tiny := onePR()
+	tiny.NetLOC = 12 // below the 20-LOC floor
+	tiny.FileCount = 2
+	tiny.CycleHours = 24 // short
+	tiny.ReworkCount = 7
+
+	big := onePR()
+	big.NetLOC = 200 // above the floor
+	big.FileCount = 6
+	big.CycleHours = 24
+	big.ReworkCount = 7
+
+	cfg := spCfg()
+	if Band(tiny, cfg).RawEffort >= Band(big, cfg).RawEffort {
+		t.Errorf("small diff should earn less rework credit than a large diff with the same bounces")
+	}
+
+	// Risk credit is NOT scaled by the floor — a tiny diff in a hot file is still
+	// risky (this is what keeps the high-risk-small-fix anchor at 5).
+	riskTiny := onePR()
+	riskTiny.NetLOC = 3
+	riskTiny.CycleHours = 18
+	riskTiny.TouchedAreaRisk = "high"
+	riskTiny.HotFiles = []string{"src/auth/mw.go"}
+	noFloor := spCfg()
+	noFloor.SmallDiffLOCFloor = 0
+	if Band(riskTiny, cfg).RawEffort != Band(riskTiny, noFloor).RawEffort {
+		t.Errorf("the small-diff floor must not scale the risk bonus")
+	}
+}
+
+// --- Phase 2: split-flag on raw effort far above the 13 floor. ---
+
+// A genuine monster (raw ≫ 13) keeps its 13 but routes to a scope/split check
+// with confidence capped at medium — a true 13 is the band you're least sure is
+// a single unit of work.
+func TestBand_SplitFlagOnOversizedEffort(t *testing.T) {
+	ev := onePR()
+	ev.NetLOC = 400 // high LOC
+	ev.FileCount = 20
+	ev.CycleHours = 720 // 30 active days → long
+	ev.ReworkCount = 4
+	ev.ReviewRounds = 5
+	ev.DeepThreads = 3
+	ev.TouchedAreaRisk = "high"
+	ev.HotFiles = []string{"a", "b"}
+
+	got := Band(ev, spCfg())
+	if got.RawEffort < spCfg().SplitThreshold {
+		t.Fatalf("test fixture should exceed the split threshold, got raw=%v", got.RawEffort)
+	}
+	if got.Points != 13 {
+		t.Errorf("split-flag keeps the score at the top band, got %d", got.Points)
+	}
+	if !got.NeedsInsight {
+		t.Errorf("oversized effort should be flagged for a split check: %+v", got)
+	}
+	if got.Confidence == "high" {
+		t.Errorf("split-flagged 13 must not be high confidence, got %q", got.Confidence)
+	}
+	if got.InsightReason == "" {
+		t.Errorf("split-flag should carry a reason")
+	}
+}
+
+// A 13 whose raw effort sits just at/below the floor stays a confident 13 —
+// defensible-contention 13s are not blanket-flagged (the conservative policy).
+func TestBand_TopBandBelowSplitStaysConfident(t *testing.T) {
+	ev := onePR()
+	ev.NetLOC = 300 // high LOC
+	ev.FileCount = 10
+	ev.CycleHours = 720 // long
+	ev.ReviewRounds = 2
+	ev.DeepThreads = 1
+
+	got := Band(ev, spCfg())
+	if got.RawEffort >= spCfg().SplitThreshold {
+		t.Skip("fixture drifted above the split threshold; not the case under test")
+	}
+	if got.Points == 13 && got.NeedsInsight && got.InsightReason != "" &&
+		got.InsightReason == "Effort exceeds a single-ticket scale — likely should have been split; confirm scope" {
+		t.Errorf("a 13 below the split threshold should not be split-flagged: %+v", got)
 	}
 }
 

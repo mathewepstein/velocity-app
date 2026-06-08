@@ -13,10 +13,11 @@ import (
 // NeedsInsight is true the deterministic signals are too thin or contradictory
 // to trust, and the frontend routes the ticket to a human/LLM pass.
 type BandResult struct {
-	Points       int    `json:"points"`        // the snapped single-value pick
-	Band         string `json:"band"`          // "3", or "2–3" when straddling
-	Confidence   string `json:"confidence"`    // low | medium | high
-	NeedsInsight bool   `json:"needs_insight"` // route to a human/LLM pass
+	Points        int    `json:"points"`                   // the snapped single-value pick
+	Band          string `json:"band"`                     // "3", or "2–3" when straddling
+	Confidence    string `json:"confidence"`               // low | medium | high
+	NeedsInsight  bool   `json:"needs_insight"`            // route to a human/LLM pass
+	InsightReason string `json:"insight_reason,omitempty"` // why it was flagged (empty when confident)
 
 	QuadrantCell string `json:"quadrant_cell"` // e.g. "short cycle / high LOC"
 	QuadrantBand string `json:"quadrant_band"` // the prior band before signal nudges
@@ -61,11 +62,27 @@ func Band(ev *TicketEvidence, cfg config.StoryPointsConfig) BandResult {
 		drivers = append(drivers, driver{points: pts, text: fmt.Sprintf(format, args...)})
 	}
 
+	// Size sanity-floor (Phase 4b): a sub-floor diff can't claim the full rework
+	// bonus — a 1-line change that bounced many times is flaky-fix churn, not big
+	// work, so its rework credit is scaled down. Risk, review-round, and
+	// deep-thread credit are left at full weight: a tiny diff in a hot file is
+	// genuinely risky, and a small diff with real approach debate is genuinely
+	// hard (this is the locked high-risk-small-fix anchor → 5).
+	reworkScale := 1.0
+	if cfg.SmallDiffLOCFloor > 0 && ev.NetLOC > 0 && ev.NetLOC < cfg.SmallDiffLOCFloor && cfg.SmallDiffBonusScale > 0 {
+		reworkScale = cfg.SmallDiffBonusScale
+	}
+
 	if ev.ReworkCount > 0 {
-		add(float64(ev.ReworkCount)*cfg.ReworkWeight, "Rework: %d backward bounce(s) from review/QA into dev", ev.ReworkCount)
+		// Saturate the count (Phase 4a): the 1st/2nd bounce carry full signal, a
+		// runaway 7th barely moves the band — capped per-signal so normal sums
+		// still land on clean Fibonacci steps.
+		n := saturate(ev.ReworkCount, cfg.ReworkCountCap)
+		add(float64(n)*cfg.ReworkWeight*reworkScale, "Rework: %d backward bounce(s) from review/QA into dev", ev.ReworkCount)
 	}
 	if ev.ReviewRounds > 0 {
-		add(float64(ev.ReviewRounds)*cfg.ReviewRoundWeight, "Review back-and-forth: %d changes-requested round(s)", ev.ReviewRounds)
+		n := saturate(ev.ReviewRounds, cfg.ReviewRoundCap)
+		add(float64(n)*cfg.ReviewRoundWeight, "Review back-and-forth: %d changes-requested round(s)", ev.ReviewRounds)
 	}
 	if ev.DeepThreads > 0 {
 		add(float64(ev.DeepThreads)*cfg.DeepThreadWeight, "Approach contention: %d deep review thread(s)", ev.DeepThreads)
@@ -109,7 +126,19 @@ func Band(ev *TicketEvidence, cfg config.StoryPointsConfig) BandResult {
 	}
 
 	res.HardestAspectHint, res.SignalSummary = explain(ev, drivers, cycleDays, cell)
-	res.Confidence, res.NeedsInsight = judge(ev, cfg, points, straddle, thinking, raw, len(drivers) == 0)
+	res.Confidence, res.NeedsInsight, res.InsightReason = judge(ev, cfg, points, straddle, thinking, raw, len(drivers) == 0)
+
+	// Phase 2 split-flag: raw effort far above the top band's floor means the work
+	// likely spanned more than one ticket. A true 13 is the band you're *least*
+	// sure is a single unit, so route it to a scope/split check rather than
+	// asserting it — keep the score, cap confidence at "medium", flag for insight.
+	if cfg.SplitThreshold > 0 && points == scale[len(scale)-1] && raw >= cfg.SplitThreshold {
+		res.NeedsInsight = true
+		res.InsightReason = "Effort exceeds a single-ticket scale — likely should have been split; confirm scope"
+		if res.Confidence == "high" {
+			res.Confidence = "medium"
+		}
+	}
 	return res
 }
 
@@ -142,29 +171,29 @@ func quadrant(cfg config.StoryPointsConfig, longCycle, highLOC bool) (float64, s
 // quadrant base (calendar/LOC) is "medium" — shown, but not asserted with
 // confidence. This restores a real low/medium/high spread at the top, where the
 // engine previously had only binary low-or-high.
-func judge(ev *TicketEvidence, cfg config.StoryPointsConfig, points int, straddle bool, thinking, raw float64, noDrivers bool) (string, bool) {
+func judge(ev *TicketEvidence, cfg config.StoryPointsConfig, points int, straddle bool, thinking, raw float64, noDrivers bool) (confidence string, needsInsight bool, reason string) {
 	switch {
 	case len(ev.PRs) == 0:
-		return "low", true
+		return "low", true, "No merged PR — typing effort can't be assessed from the diff"
 	case straddle:
-		return "low", true
+		return "low", true, "Raw effort sits between two Fibonacci steps — magnitude is ambiguous"
 	case points >= 5 && thinking < cfg.MinThinkingForHighBand:
 		// The band is high but nothing corroborates the difficulty.
-		return "low", true
+		return "low", true, "High band driven by cycle time with no corroborating rework/review — likely queue latency, not complexity"
 	case noDrivers && points >= 3:
 		// Sized into a 3+ purely on volume with zero thinking signal.
-		return "low", true
+		return "low", true, "Sized on volume alone — no complexity signal corroborates the band"
 	}
 
 	// Below the inflation floor on a low band → no strong claim either way.
 	if thinking < cfg.MinThinkingForHighBand || straddle {
-		return "medium", false
+		return "medium", false, ""
 	}
 	// High band that's mostly quadrant base, not corroborated thinking → medium.
 	if points >= 5 && cfg.HighBandThinkingShare > 0 && raw > 0 && thinking < cfg.HighBandThinkingShare*raw {
-		return "medium", false
+		return "medium", false, ""
 	}
-	return "high", false
+	return "high", false, ""
 }
 
 // explain builds the hardest-aspect hint + the one-line signal summary.
@@ -271,6 +300,15 @@ func emptyTo(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// saturate caps count at cap (Phase 4a), so a runaway process-signal count
+// can't max the band. cap ≤ 0 disables (legacy linear count).
+func saturate(count, cap int) int {
+	if cap > 0 && count > cap {
+		return cap
+	}
+	return count
 }
 
 func itos(n int) string { return fmt.Sprintf("%d", n) }

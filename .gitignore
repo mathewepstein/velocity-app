@@ -34,3 +34,7 @@ go.work.sum
 # OS
 .DS_Store
 Thumbs.db
+
+# Committed-binary guard (build artifacts, never track)
+/velocity-multiplier-audit
+/velocity-codeimpact-audit

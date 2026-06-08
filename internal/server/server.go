@@ -239,6 +239,8 @@ func buildHandler(selfLogin string, incog bool, profile config.Profile, store ca
 	mux.HandleFunc("GET /velocity/{$}", renderPage("velocity.html", "velocity"))
 	mux.HandleFunc("GET /contributors", renderPage("contributors.html", "contributors"))
 	mux.HandleFunc("GET /contributors/{$}", renderPage("contributors.html", "contributors"))
+	mux.HandleFunc("GET /scoring", renderPage("scoring.html", "scoring"))
+	mux.HandleFunc("GET /scoring/{$}", renderPage("scoring.html", "scoring"))
 	mux.HandleFunc("GET /dev/", renderPage("dev.html", "me"))
 
 	mux.HandleFunc("GET /metrics.json", func(w http.ResponseWriter, r *http.Request) {
@@ -452,7 +454,30 @@ func buildHandler(selfLogin string, incog bool, profile config.Profile, store ca
 	// always refetching assets costs nothing.
 	mux.Handle("GET /", noStore(http.FileServer(http.FS(webFS))))
 
-	return mux, nil
+	return guardLocalhost(mux), nil
+}
+
+// guardLocalhost rejects any request whose Host header is not a loopback
+// address. The server only ever listens on 127.0.0.1, so a legitimate browser
+// request always carries a loopback Host (127.0.0.1, localhost, or ::1). The
+// guard exists to defeat DNS rebinding: an attacker page that rebinds its
+// domain to 127.0.0.1 can reach the socket, but its requests still carry the
+// attacker's domain in the Host header, so they are refused here — closing the
+// only same-origin path to the unauthenticated /api/* data and the
+// state-mutating POST /api/scoring/generate endpoint.
+func guardLocalhost(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(r.Host); err == nil {
+			host = h
+		}
+		switch host {
+		case "127.0.0.1", "localhost", "::1", "[::1]":
+			next.ServeHTTP(w, r)
+		default:
+			http.Error(w, "forbidden: non-loopback Host header", http.StatusForbidden)
+		}
+	})
 }
 
 // parseWindow reads the required from/to month params (YYYY-MM) off an /api

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,12 +12,54 @@ import (
 	"github.com/mathewepstein/velocity/internal/config"
 )
 
+// loopbackRequest builds a test request that carries a loopback Host header,
+// the way a real browser request to the 127.0.0.1-bound server does. Without
+// this, httptest.NewRequest defaults Host to "example.com", which the
+// guardLocalhost middleware (correctly) rejects with 403.
+func loopbackRequest(method, target string, body io.Reader) *http.Request {
+	req := httptest.NewRequest(method, target, body)
+	req.Host = "127.0.0.1"
+	return req
+}
+
+func TestHandler_GuardRejectsNonLoopbackHost(t *testing.T) {
+	h, err := buildHandler("", false, config.Profile{}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildHandler: %v", err)
+	}
+	// A DNS-rebinding attacker reaches the socket but still sends its own
+	// domain in the Host header; the guard must refuse it even for /healthz.
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.Host = "evil.example.com"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("non-loopback Host: want 403, got %d", rec.Code)
+	}
+}
+
+func TestHandler_GuardAllowsLoopbackHosts(t *testing.T) {
+	h, err := buildHandler("", false, config.Profile{}, nil, nil)
+	if err != nil {
+		t.Fatalf("buildHandler: %v", err)
+	}
+	for _, host := range []string{"127.0.0.1", "127.0.0.1:8080", "localhost", "localhost:51234", "[::1]:8080"} {
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		req.Host = host
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("loopback Host %q: want 200, got %d", host, rec.Code)
+		}
+	}
+}
+
 func TestHandler_HealthzIsOK(t *testing.T) {
 	h, err := buildHandler("", false, config.Profile{}, nil, nil)
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := loopbackRequest(http.MethodGet, "/healthz", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -32,7 +75,7 @@ func TestHandler_RootRendersLeaderboard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := loopbackRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -55,7 +98,7 @@ func TestHandler_DevPageRendered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/dev/octocat", nil)
+	req := loopbackRequest(http.MethodGet, "/dev/octocat", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -72,7 +115,7 @@ func TestHandler_ContributorsRendered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/contributors", nil)
+	req := loopbackRequest(http.MethodGet, "/contributors", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -88,7 +131,7 @@ func TestHandler_MeLinkUsesSelfLogin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := loopbackRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	body := rec.Body.String()
@@ -102,7 +145,7 @@ func TestHandler_ServesEmbeddedJS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/dev.js", nil)
+	req := loopbackRequest(http.MethodGet, "/dev.js", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -119,7 +162,7 @@ func TestHandler_MetricsHeadersNoCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/metrics.json", nil)
+	req := loopbackRequest(http.MethodGet, "/metrics.json", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
@@ -135,7 +178,7 @@ func TestHandler_APIContributorsUnavailableWithoutStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/api/contributors?from=2026-01&to=2026-03", nil)
+	req := loopbackRequest(http.MethodGet, "/api/contributors?from=2026-01&to=2026-03", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -154,7 +197,7 @@ func TestHandler_APIContributorsRequiresWindow(t *testing.T) {
 		t.Fatalf("buildHandler: %v", err)
 	}
 	for _, q := range []string{"", "?from=2026-01", "?to=2026-03", "?from=bad&to=2026-03"} {
-		req := httptest.NewRequest(http.MethodGet, "/api/contributors"+q, nil)
+		req := loopbackRequest(http.MethodGet, "/api/contributors"+q, nil)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
@@ -173,7 +216,7 @@ func TestHandler_APIContributorsRejectsBadSort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/api/contributors?from=2026-01&to=2026-03&sort=bogus", nil)
+	req := loopbackRequest(http.MethodGet, "/api/contributors?from=2026-01&to=2026-03&sort=bogus", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -224,7 +267,7 @@ func TestHandler_APIDevUnavailableWithoutStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildHandler: %v", err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/api/dev/octocat?from=2026-01&to=2026-03", nil)
+	req := loopbackRequest(http.MethodGet, "/api/dev/octocat?from=2026-01&to=2026-03", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
@@ -243,7 +286,7 @@ func TestHandler_APIDevRequiresWindow(t *testing.T) {
 		t.Fatalf("buildHandler: %v", err)
 	}
 	for _, q := range []string{"", "?from=2026-01", "?to=2026-03", "?from=bad&to=2026-03"} {
-		req := httptest.NewRequest(http.MethodGet, "/api/dev/octocat"+q, nil)
+		req := loopbackRequest(http.MethodGet, "/api/dev/octocat"+q, nil)
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
@@ -263,7 +306,7 @@ func TestHandler_APIDevNotFoundForUnknownLogin(t *testing.T) {
 		t.Fatalf("buildHandler: %v", err)
 	}
 	// Empty cache → empty cohort → no dev matches → 404 (not 500).
-	req := httptest.NewRequest(http.MethodGet, "/api/dev/nobody?from=2026-01&to=2026-03", nil)
+	req := loopbackRequest(http.MethodGet, "/api/dev/nobody?from=2026-01&to=2026-03", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {

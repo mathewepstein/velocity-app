@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mathewepstein/velocity/internal/cache"
@@ -20,6 +21,21 @@ type ticketDetail struct {
 	Band               scoring.BandResult      `json:"band"`
 	Persisted          *scoring.ScoreRecord    `json:"persisted,omitempty"`
 	ScoreTicketCommand string                  `json:"score_ticket_command"`
+	// JiraURL is the deep link to the ticket, built from the configured Jira
+	// base URL (omitted when no base URL is set, so the frontend renders no
+	// broken link). Instance-agnostic — never hardcoded.
+	JiraURL string `json:"jira_url,omitempty"`
+}
+
+// jiraBrowseURL builds the standard Jira deep link ({base}/browse/{KEY}) from
+// the instance's configured base URL. Returns "" when either part is missing so
+// callers can omit the link rather than emit a broken one.
+func jiraBrowseURL(base, key string) string {
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	if base == "" || key == "" {
+		return ""
+	}
+	return base + "/browse/" + key
 }
 
 // generateResult is the /api/scoring/generate response. Row is set for a
@@ -118,6 +134,7 @@ func registerScoringRoutes(mux *http.ServeMux, profile config.Profile, store cac
 			Band:               band,
 			Persisted:          persisted,
 			ScoreTicketCommand: "/score-ticket " + ev.Key,
+			JiraURL:            jiraBrowseURL(profile.Jira.BaseURL, ev.Key),
 		})
 	})
 

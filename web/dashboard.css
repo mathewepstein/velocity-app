@@ -1375,3 +1375,346 @@ footer {
   font-size: 13px;
   color: var(--fg);
 }
+
+/* ---- Scoring page (story-points engine, Phase 4) ---- */
+
+/* Master-detail split: the list is full-width until a row is selected, then
+   the detail opens in the right half and the list compacts into the left. */
+.score-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  align-items: start;
+}
+.score-layout.split {
+  grid-template-columns: 1fr 1fr;
+}
+.score-layout #detail-panel {
+  margin-bottom: 0;
+}
+.score-layout.split #detail-panel {
+  position: sticky;
+  top: 20px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+/* Tighten the list columns when it shares the row width with the detail. */
+.score-layout.split .score-row {
+  grid-template-columns: minmax(72px, 1fr) 52px 44px 78px 94px 48px 84px;
+  gap: 9px;
+}
+.detail-close {
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  color: var(--fg-muted);
+  border-radius: 6px;
+  width: 26px;
+  height: 26px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  flex: none;
+}
+.detail-close:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+/* Below tablet, collapse the split back to a stacked single column. */
+@media (max-width: 960px) {
+  .score-layout.split {
+    grid-template-columns: 1fr;
+  }
+  .score-layout.split #detail-panel {
+    position: static;
+    max-height: none;
+    overflow-y: visible;
+  }
+  .score-layout.split .score-row {
+    grid-template-columns:
+      minmax(96px, 0.8fr) minmax(64px, 0.6fr) minmax(56px, 0.5fr)
+      minmax(96px, 0.7fr) minmax(110px, 0.8fr) minmax(64px, 0.5fr) minmax(
+        120px,
+        0.9fr
+      );
+    gap: 14px;
+  }
+}
+
+/* Run-generator button + status, shared by the controls row and the detail
+   override block. */
+.run-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    opacity 120ms ease;
+}
+.run-btn:hover {
+  background: rgba(106, 169, 255, 0.28);
+}
+.run-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.run-status {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.score-table {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.score-row {
+  display: grid;
+  grid-template-columns: 0.8fr 0.6fr 0.5fr 0.7fr 0.8fr 0.5fr 0.9fr;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 6px;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--panel-border);
+  font: inherit;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+.score-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(106, 169, 255, 0.35);
+}
+.score-row.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.score-row.score-head {
+  color: var(--fg-subtle);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--panel-border);
+  padding: 6px 12px;
+  border-radius: 0;
+  cursor: default;
+  white-space: nowrap;
+}
+.score-row.score-head:hover {
+  background: transparent;
+}
+.score-row.score-head .num {
+  justify-content: flex-end;
+  text-align: right;
+}
+.score-row .ticket {
+  font-family: ui-monospace, 'SF Mono', monospace;
+  font-size: 13px;
+  color: var(--fg);
+}
+.score-row .num {
+  text-align: right;
+  font-family: ui-monospace, 'SF Mono', monospace;
+  font-size: 13px;
+  color: var(--fg);
+}
+.score-empty {
+  padding: 16px 4px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+.load-more {
+  align-self: center;
+  margin-top: 8px;
+}
+
+/* Badges: confidence + flag/posted/override status. */
+.score-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  vertical-align: middle;
+}
+.conf-badge.conf-high {
+  color: var(--success);
+  background: rgba(111, 210, 143, 0.12);
+  border-color: rgba(111, 210, 143, 0.4);
+}
+.conf-badge.conf-med {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: rgba(106, 169, 255, 0.4);
+}
+.conf-badge.conf-low {
+  color: var(--fg-subtle);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+.flag-badge {
+  color: #f5b76b;
+  background: rgba(245, 183, 107, 0.14);
+  border-color: rgba(245, 183, 107, 0.45);
+}
+.posted-badge {
+  color: var(--success);
+  background: rgba(111, 210, 143, 0.12);
+  border-color: rgba(111, 210, 143, 0.4);
+}
+.override-badge {
+  margin-left: 6px;
+  color: var(--overlay);
+  background: var(--overlay-soft);
+  border-color: rgba(197, 143, 255, 0.4);
+}
+
+/* Detail panel. */
+.detail-summary {
+  margin: 0 0 8px;
+  font-size: 15px;
+  color: var(--fg);
+}
+.detail-jira-link {
+  display: inline-block;
+  margin-bottom: 16px;
+  font-size: 12px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.detail-jira-link:hover {
+  text-decoration: underline;
+}
+.detail-head {
+  display: flex;
+  gap: 28px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.detail-stat-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--fg-subtle);
+  margin-bottom: 4px;
+}
+.detail-stat-val {
+  font-size: 18px;
+  font-weight: 600;
+  font-family: ui-monospace, 'SF Mono', monospace;
+  color: var(--fg);
+}
+.detail-field {
+  margin-bottom: 14px;
+}
+.detail-field-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--fg-subtle);
+  margin-bottom: 5px;
+}
+.detail-field-val {
+  font-size: 13px;
+  color: var(--fg);
+}
+.detail-drivers {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--fg);
+}
+.detail-drivers li {
+  margin-bottom: 3px;
+}
+.detail-facts {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 0;
+  font-size: 13px;
+}
+.detail-facts dt {
+  color: var(--fg-muted);
+}
+.detail-facts dd {
+  margin: 0;
+  color: var(--fg);
+  font-family: ui-monospace, 'SF Mono', monospace;
+}
+.detail-copy,
+.detail-override {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--panel-border);
+}
+.copy-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+.copy-row code {
+  flex: 1;
+  padding: 8px 12px;
+  font-family: ui-monospace, 'SF Mono', monospace;
+  font-size: 13px;
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.copy-btn {
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  cursor: pointer;
+  width: 100%;
+}
+.copy-btn:hover {
+  color: var(--fg);
+  border-color: rgba(106, 169, 255, 0.35);
+}
+.copy-row .copy-btn {
+  width: auto;
+}
+.override-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.override-input {
+  width: 80px;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: ui-monospace, 'SF Mono', monospace;
+  color: var(--fg);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+}

@@ -42,7 +42,7 @@ func handlerWith(t *testing.T, scores *scoring.ScoreStore) http.Handler {
 func TestScoringList_503WithoutStore(t *testing.T) {
 	h := handlerWith(t, nil)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/scoring/list", nil))
+	h.ServeHTTP(rec, loopbackRequest(http.MethodGet, "/api/scoring/list", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", rec.Code)
 	}
@@ -51,7 +51,7 @@ func TestScoringList_503WithoutStore(t *testing.T) {
 func TestScoringList_BadFilter400(t *testing.T) {
 	h := handlerWith(t, seededScoreStore(t))
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/scoring/list?filter=bogus", nil))
+	h.ServeHTTP(rec, loopbackRequest(http.MethodGet, "/api/scoring/list?filter=bogus", nil))
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
@@ -60,7 +60,7 @@ func TestScoringList_BadFilter400(t *testing.T) {
 func TestScoringList_ReturnsRows(t *testing.T) {
 	h := handlerWith(t, seededScoreStore(t))
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/scoring/list", nil))
+	h.ServeHTTP(rec, loopbackRequest(http.MethodGet, "/api/scoring/list", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -80,7 +80,7 @@ func TestScoringList_ReturnsRows(t *testing.T) {
 func TestScoringList_NeedsInsightFilter(t *testing.T) {
 	h := handlerWith(t, seededScoreStore(t))
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/scoring/list?filter=needs_insight", nil))
+	h.ServeHTTP(rec, loopbackRequest(http.MethodGet, "/api/scoring/list?filter=needs_insight", nil))
 	var rows []scoring.ScoreRecord
 	json.Unmarshal(rec.Body.Bytes(), &rows)
 	if len(rows) != 1 || rows[0].Ticket != "CD-2" {
@@ -91,7 +91,7 @@ func TestScoringList_NeedsInsightFilter(t *testing.T) {
 func TestScoringTicket_503WithoutCacheStore(t *testing.T) {
 	h := handlerWith(t, seededScoreStore(t)) // scores present, but no corpus store
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/scoring/ticket/CD-1", nil))
+	h.ServeHTTP(rec, loopbackRequest(http.MethodGet, "/api/scoring/ticket/CD-1", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503 (no cache store)", rec.Code)
 	}
@@ -100,7 +100,7 @@ func TestScoringTicket_503WithoutCacheStore(t *testing.T) {
 func TestScoringGenerate_503WithoutStores(t *testing.T) {
 	h := handlerWith(t, nil)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/scoring/generate", nil))
+	h.ServeHTTP(rec, loopbackRequest(http.MethodPost, "/api/scoring/generate", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", rec.Code)
 	}

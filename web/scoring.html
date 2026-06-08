@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Velocity — Scoring</title>
+  <link rel="stylesheet" href="/dashboard.css" />
+</head>
+
+<body class="{{if .Incognito}}incognito{{end}}">
+  {{template "nav" .}}
+
+  <div class="container">
+    <header class="page">
+      <div>
+        <h1>Story-point scoring</h1>
+        <div class="sub" id="score-summary">Loading…</div>
+      </div>
+      <div class="header-actions">
+        <span class="run-status" id="run-status"></span>
+        <button type="button" class="run-btn" id="run-generator"
+          title="Re-band every post-hoc ticket (tickets with a merged PR) and persist the results.">Run generator</button>
+      </div>
+    </header>
+
+    <div class="score-layout" id="score-layout">
+      <section class="panel">
+        <h2>Banded tickets <span class="meta" id="score-meta"></span></h2>
+        <div class="team-controls contrib-controls">
+          <span class="control-label">Filter</span>
+          <div class="control-group" id="score-filter" role="tablist" aria-label="Score filter">
+            <button data-filter="needs_insight" class="active">Needs insight</button>
+            <button data-filter="all">All</button>
+          </div>
+        </div>
+
+        <div class="score-table" role="table" aria-label="Scored tickets">
+          <div class="score-row score-head" role="row">
+            <div role="columnheader">Ticket</div>
+            <div role="columnheader" class="num">Band</div>
+            <div role="columnheader" class="num">Points</div>
+            <div role="columnheader"></div>
+            <div role="columnheader"></div>
+            <div role="columnheader" class="num">Jira SP</div>
+            <div role="columnheader"></div>
+          </div>
+          <div id="score-body"></div>
+        </div>
+      </section>
+
+      <section class="panel" id="detail-panel" hidden>
+        <h2><span>Ticket detail <span class="meta" id="detail-key"></span></span>
+          <button type="button" class="detail-close" id="detail-close" aria-label="Close detail">×</button>
+        </h2>
+        <div id="detail-body"></div>
+      </section>
+    </div>
+
+    <footer>
+      <span id="footer-generated"></span>
+    </footer>
+  </div>
+
+  <div class="loading" id="loading">Loading scores…</div>
+  <div class="error" id="error" hidden>
+    Could not load <code>/api/scoring/list</code>. Start the server with a
+    scoring store and run <code>velocity score generate</code> first.
+  </div>
+
+  <script src="/util.js" defer></script>
+  <script src="/scoring.js" defer></script>
+</body>
+
+</html>

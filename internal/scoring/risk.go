@@ -1,9 +1,7 @@
 package scoring
 
 import (
-	"strings"
-
-	"github.com/bmatcuk/doublestar/v4"
+	"github.com/mathewepstein/velocity/internal/analyze"
 	"github.com/mathewepstein/velocity/internal/config"
 )
 
@@ -64,44 +62,14 @@ func domainRiskTier(paths []string, cfg config.RiskConfig) (tier, matched string
 }
 
 // firstMatch returns the first glob in globs that any path matches, or "".
+// Glob matching is shared with the noise-path list via analyze.MatchGlob.
 func firstMatch(paths, globs []string) string {
 	for _, g := range globs {
 		for _, p := range paths {
-			if matchGlob(g, p) {
+			if analyze.MatchGlob(g, p) {
 				return g
 			}
 		}
 	}
 	return ""
-}
-
-// matchGlob reports whether path matches glob. It tries a full doublestar match
-// first, then — for convenience — a substring match on the glob's literal core
-// (the pattern with leading/trailing `**/`, `/**`, and `*` trimmed) so a config
-// entry of just `auth-microservice` or `auth-microservice/**` matches a deep
-// path without the user having to anchor it precisely.
-func matchGlob(glob, path string) bool {
-	path = strings.TrimPrefix(path, "./")
-	if ok, err := doublestar.Match(glob, path); err == nil && ok {
-		return true
-	}
-	if core := globCore(glob); core != "" && strings.Contains(path, core) {
-		return true
-	}
-	return false
-}
-
-// globCore strips doublestar wildcards from the edges of a glob to recover its
-// literal directory core, used for the substring-fallback match. Returns "" if
-// the glob has interior wildcards (no safe literal core to anchor on).
-func globCore(glob string) string {
-	c := strings.Trim(glob, "/")
-	c = strings.TrimPrefix(c, "**/")
-	c = strings.TrimSuffix(c, "/**")
-	c = strings.Trim(c, "/")
-	// Interior wildcards mean there's no single literal substring to test.
-	if strings.ContainsAny(c, "*?[") {
-		return ""
-	}
-	return c
 }

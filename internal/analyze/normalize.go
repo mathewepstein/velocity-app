@@ -4,9 +4,58 @@ import (
 	"path"
 	"strings"
 
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/mathewepstein/velocity/internal/cache"
 	"github.com/mathewepstein/velocity/internal/config"
 )
+
+// MatchGlob reports whether path matches glob using doublestar semantics (`**`
+// spans path segments). For ergonomics it also matches when the glob's literal
+// directory core (the pattern with leading/trailing `**/`, `/**`, `*` trimmed)
+// appears as a substring of the path, so a bare `auth-microservice` matches a
+// deep path without precise anchoring. Shared by the story-points domain-risk
+// matcher and the noise-path list so both behave identically.
+func MatchGlob(glob, path string) bool {
+	path = strings.TrimPrefix(path, "./")
+	if ok, err := doublestar.Match(glob, path); err == nil && ok {
+		return true
+	}
+	if core := globCore(glob); core != "" && strings.Contains(path, core) {
+		return true
+	}
+	return false
+}
+
+// MatchesAnyGlob reports whether path matches any glob in globs.
+func MatchesAnyGlob(path string, globs []string) bool {
+	for _, g := range globs {
+		if MatchGlob(g, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// MatchesNoisePath reports whether p is a configured non-shipping/low-value
+// "noise" path (storybook, stories, test-result artifacts). Used to dampen the
+// path in code_impact and to exclude it from the story-points risk signal.
+func MatchesNoisePath(p string, cfg config.NormalizeConfig) bool {
+	return MatchesAnyGlob(p, cfg.NoisePaths)
+}
+
+// globCore strips doublestar wildcards from the edges of a glob to recover its
+// literal directory core for the substring-fallback match; "" if the glob has
+// interior wildcards (no safe literal core to anchor on).
+func globCore(glob string) string {
+	c := strings.Trim(glob, "/")
+	c = strings.TrimPrefix(c, "**/")
+	c = strings.TrimSuffix(c, "/**")
+	c = strings.Trim(c, "/")
+	if strings.ContainsAny(c, "*?[") {
+		return ""
+	}
+	return c
+}
 
 // Phase 6.2 — silent anti-gaming normalization.
 //
@@ -69,10 +118,13 @@ func IsGeneratedPath(p string, cfg config.NormalizeConfig) bool {
 	return matchesGeneratedPattern(p, cfg.GeneratedFilePatterns)
 }
 
-// genFileWeight is the per-file generated-pattern weight: GeneratedFileWeight
-// for a path matching a configured pattern, else 1.0.
+// genFileWeight is the per-file weight feeding code_impact's file-count input:
+// GeneratedFileWeight for a generated-pattern file OR a configured noise path
+// (storybook, stories, test-result artifacts — present but low-value), else 1.0.
+// Noise paths are dampened here (not zeroed) and LOC is left untouched; a full
+// per-file LOC exclusion is deferred (it would move historical Elo).
 func genFileWeight(path string, cfg config.NormalizeConfig) float64 {
-	if matchesGeneratedPattern(path, cfg.GeneratedFilePatterns) {
+	if matchesGeneratedPattern(path, cfg.GeneratedFilePatterns) || MatchesNoisePath(path, cfg) {
 		return cfg.GeneratedFileWeight
 	}
 	return 1.0

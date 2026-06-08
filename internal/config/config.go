@@ -217,8 +217,9 @@ type RiskConfig struct {
 	Medium []string `toml:"medium"`
 }
 
-// Empty reports whether no domain-risk globs are configured, so the extractor
-// can skip the per-path scan entirely on a stock install.
+// Empty reports whether no domain-risk elevation globs are configured, so the
+// extractor can skip the per-path domain scan on a stock install. (Noise-path
+// exclusion lives on NormalizeConfig and is applied independently.)
 func (r RiskConfig) Empty() bool { return len(r.High) == 0 && len(r.Medium) == 0 }
 
 // BugConfig optionally re-weights thinking signals for bug-type tickets. Zero
@@ -399,6 +400,17 @@ type NormalizeConfig struct {
 	MultiplierFloor       float64  `toml:"multiplier_floor"`
 	GeneratedFilePatterns []string `toml:"generated_file_patterns"`
 	GeneratedFileWeight   float64  `toml:"generated_file_weight"`
+
+	// NoisePaths are non-shipping, low-value path globs (doublestar) that count
+	// as pure noise for measurement: dev-only tooling like storybook stories and
+	// test-result artifacts. Shared across subsystems — the story-points engine
+	// hard-excludes them from the touched-area risk signal (and from
+	// `risk-discover`), and the contributor code_impact metric dampens them like
+	// generated files (GeneratedFileWeight). LOC exclusion is intentionally NOT
+	// applied here (loc_changed is summed PR-level; per-file LOC filtering would
+	// move historical Elo and is deferred to a calibrated change). Empty default —
+	// the list is stack-specific and lives in config, not the binary.
+	NoisePaths []string `toml:"noise_paths"`
 }
 
 // KTier is one row in the K-factor ramp: from MinPeriods (inclusive) up to

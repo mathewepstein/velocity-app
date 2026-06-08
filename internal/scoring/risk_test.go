@@ -66,14 +66,14 @@ func TestDomainRiskTier_EmptyConfig(t *testing.T) {
 
 func TestMatchGlob_SubstringFallback(t *testing.T) {
 	// A bare directory name (no ** anchoring) should still match a deep path via
-	// the substring-core fallback.
-	if !matchGlob("auth-microservice", "src/main/java/com/x/auth-microservice/Login.java") {
+	// the substring-core fallback. (Matcher is shared in analyze.MatchGlob.)
+	if !analyze.MatchGlob("auth-microservice", "src/main/java/com/x/auth-microservice/Login.java") {
 		t.Error("bare dir name should match deep path via substring fallback")
 	}
-	if !matchGlob("auth-microservice/**", "src/auth-microservice/a/b.go") {
+	if !analyze.MatchGlob("auth-microservice/**", "src/auth-microservice/a/b.go") {
 		t.Error("dir/** should match")
 	}
-	if matchGlob("**/billing/**", "src/auth/x.go") {
+	if analyze.MatchGlob("**/billing/**", "src/auth/x.go") {
 		t.Error("non-matching glob should not match")
 	}
 }
@@ -133,6 +133,47 @@ func TestExtract_DomainRiskElevates(t *testing.T) {
 	}
 	if !foundDomain {
 		t.Errorf("expected a domain-match driver, got %v", b.Drivers)
+	}
+}
+
+// A configured noise path (storybook stories) is kept OUT of the churn risk
+// signal even when it's corpus-hot — it would otherwise inflate touched-area
+// risk on dev-only tooling.
+func TestExtract_NoisePathExcludedFromRisk(t *testing.T) {
+	created := time.Date(2026, 4, 1, 9, 0, 0, 0, time.UTC)
+	merged := created.Add(8 * time.Hour)
+	story := "src/stories/Button.stories.ts"
+	data := &analyze.Loaded{
+		Issues: []cache.JiraIssue{{
+			Key: "CD-400", Summary: "tweak story", IssueType: "Task", Status: "Done",
+			Resolution: "Done", Created: created, Resolved: ptr(merged.Add(time.Hour)),
+			CycleHours: 7, DetailFetched: true,
+		}},
+		PRs: []cache.GitHubPR{
+			{Number: 50, Repo: "org/app", State: "merged", Created: created, Merged: ptr(merged),
+				IssueKeys:   []string{"CD-400"},
+				FileChanges: []cache.FileChange{{Path: story, Status: "modified", Additions: 5, Deletions: 1}}},
+			// Background PRs making the story file corpus-hot.
+			bgPR(60, "org/app", story), bgPR(61, "org/app", story), bgPR(62, "org/app", story),
+			bgPR(63, "org/app", story), bgPR(64, "org/app", story), bgPR(65, "org/app", story),
+		},
+	}
+
+	// Without noise config: the hot story file drives risk up.
+	plain := NewExtractor(data, defaultNorm(), 5*time.Minute, config.RiskConfig{})
+	evPlain, _ := plain.Extract("CD-400")
+
+	// With the story dir as a noise path: excluded from the hot set → low risk.
+	norm := defaultNorm()
+	norm.NoisePaths = []string{"**/src/stories/**"}
+	quiet := NewExtractor(data, norm, 5*time.Minute, config.RiskConfig{})
+	evQuiet, _ := quiet.Extract("CD-400")
+
+	if len(evQuiet.HotFiles) != 0 {
+		t.Errorf("noise path should not appear in HotFiles, got %v", evQuiet.HotFiles)
+	}
+	if evQuiet.TouchedAreaRisk != "low" {
+		t.Errorf("risk with noise excluded = %q, want low (plain was %q)", evQuiet.TouchedAreaRisk, evPlain.TouchedAreaRisk)
 	}
 }
 

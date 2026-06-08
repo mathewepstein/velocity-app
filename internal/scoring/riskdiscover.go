@@ -101,7 +101,7 @@ func RiskDiscover(e *Extractor, opts RiskDiscoverOpts) RiskDiscoverResult {
 		ku := strings.ToUpper(strings.TrimSpace(key))
 		for _, pr := range e.prsByKey[ku] {
 			for f := range distinctPaths(pr) {
-				if analyze.IsGeneratedPath(f, e.norm) || isRiskExcludedFile(f) {
+				if analyze.IsGeneratedPath(f, e.norm) || isRiskExcludedFile(f) || analyze.MatchesNoisePath(f, e.norm) {
 					continue
 				}
 				// Migration paths group at the migration segment (so db/changelog

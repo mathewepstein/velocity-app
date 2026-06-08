@@ -295,7 +295,7 @@ func (e *Extractor) Extract(ticketKey string) (*TicketEvidence, bool) {
 			// touched path in the whole corpus). Exclude them from the hot set; the
 			// frequency index + cutoff are left intact so genuine hot code is
 			// unaffected.
-			if e.hotCutoff > 0 && e.fileFreq[f] >= e.hotCutoff && !isRiskExcludedFile(f) {
+			if e.hotCutoff > 0 && e.fileFreq[f] >= e.hotCutoff && !isRiskExcludedFile(f) && !analyze.MatchesNoisePath(f, e.norm) {
 				hot[f] = struct{}{}
 			}
 		}

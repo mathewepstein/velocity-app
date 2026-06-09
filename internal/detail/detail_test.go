@@ -11,18 +11,26 @@ import (
 // once, open issues every run; GitHub phases only touch merged PRs whose
 // sentinel slice is still nil.
 
-func TestJiraDetailGate(t *testing.T) {
-	ph := JiraDetailPhase(nil, nil)
+func TestJiraGate(t *testing.T) {
+	ph := JiraPhase(nil, nil)
 	now := time.Now()
 
+	// A fully-captured resolved issue carries both sentinels (DetailFetched +
+	// non-nil RawFields). Missing either, or being open, needs (re)hydration.
+	captured := func(iss cache.JiraIssue) cache.JiraIssue {
+		iss.DetailFetched = true
+		iss.RawFields = []cache.RawField{}
+		return iss
+	}
 	cases := []struct {
 		name string
 		iss  cache.JiraIssue
 		want bool
 	}{
 		{"unfetched", cache.JiraIssue{}, true},
-		{"resolved fetched once", cache.JiraIssue{DetailFetched: true, Resolved: &now}, false},
-		{"open re-hydrates every run", cache.JiraIssue{DetailFetched: true}, true},
+		{"resolved fully captured once", captured(cache.JiraIssue{Resolved: &now}), false},
+		{"open re-hydrates every run", captured(cache.JiraIssue{}), true},
+		{"detail-fetched but no raw fields (base-pull rewrote)", cache.JiraIssue{DetailFetched: true, Resolved: &now}, true},
 	}
 	for _, c := range cases {
 		if got := ph.NeedsWork(&c.iss); got != c.want {

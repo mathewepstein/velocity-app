@@ -32,11 +32,12 @@ func adfDoc(text string) map[string]interface{} {
 	}
 }
 
-func TestFetchIssueDetail_BasicNoPagination(t *testing.T) {
+func TestHydrateIssue_BasicNoPagination(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/rest/api/3/issue/CD-1", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, map[string]interface{}{
-			"key": "CD-1",
+			"key":   "CD-1",
+			"names": map[string]interface{}{"description": "Description", "comment": "Comment"},
 			"fields": map[string]interface{}{
 				"description": adfDoc("See https://confluence.example.com/x for scope."),
 				"comment": map[string]interface{}{
@@ -48,6 +49,12 @@ func TestFetchIssueDetail_BasicNoPagination(t *testing.T) {
 						},
 					},
 					"startAt": 0, "maxResults": 100, "total": 1,
+				},
+				"issuelinks": []interface{}{
+					map[string]interface{}{
+						"type":         map[string]interface{}{"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
+						"outwardIssue": map[string]interface{}{"key": "CD-9"},
+					},
 				},
 			},
 			"changelog": map[string]interface{}{
@@ -68,26 +75,31 @@ func TestFetchIssueDetail_BasicNoPagination(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	d, err := newTestJiraPuller(t, srv.URL).FetchIssueDetail(context.Background(), "CD-1")
-	if err != nil {
-		t.Fatalf("fetch: %v", err)
+	iss := &cache.JiraIssue{Key: "CD-1"}
+	if err := newTestJiraPuller(t, srv.URL).HydrateIssue(context.Background(), iss, time.Unix(1_700_000_000, 0)); err != nil {
+		t.Fatalf("hydrate: %v", err)
 	}
-	if d.Description != "See https://confluence.example.com/x for scope." {
-		t.Fatalf("description = %q", d.Description)
+	if iss.Description != "See https://confluence.example.com/x for scope." {
+		t.Fatalf("description = %q", iss.Description)
 	}
-	if len(d.DescURLs) != 1 || d.DescURLs[0] != "https://confluence.example.com/x" {
-		t.Fatalf("desc URLs = %v", d.DescURLs)
-	}
-	if len(d.Comments) != 1 || d.Comments[0].Body != "first comment" || d.Comments[0].Author != "acct-a" {
-		t.Fatalf("comments = %+v", d.Comments)
+	if len(iss.Comments) != 1 || iss.Comments[0].Body != "first comment" || iss.Comments[0].Author != "acct-a" {
+		t.Fatalf("comments = %+v", iss.Comments)
 	}
 	// Only the status item is kept; the assignee change is dropped.
-	if len(d.Changelog) != 1 || d.Changelog[0].To != "In Progress" || d.Changelog[0].Field != "status" {
-		t.Fatalf("changelog = %+v", d.Changelog)
+	if len(iss.Changelog) != 1 || iss.Changelog[0].To != "In Progress" || iss.Changelog[0].Field != "status" {
+		t.Fatalf("changelog = %+v", iss.Changelog)
+	}
+	// Relationships captured from the same comprehensive pull.
+	if len(iss.Links) != 1 || iss.Links[0].Key != "CD-9" || iss.Links[0].LinkType != "Blocks" {
+		t.Fatalf("links = %+v", iss.Links)
+	}
+	// Both resume sentinels set, and the raw catch-all populated.
+	if !iss.DetailFetched || iss.RawFields == nil {
+		t.Fatalf("expected DetailFetched + non-nil RawFields, got fetched=%v raw=%v", iss.DetailFetched, iss.RawFields)
 	}
 }
 
-func TestFetchIssueDetail_PagesChangelogAndComments(t *testing.T) {
+func TestHydrateIssue_PagesChangelogAndComments(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/rest/api/3/issue/CD-2", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(t, w, map[string]interface{}{
@@ -132,33 +144,19 @@ func TestFetchIssueDetail_PagesChangelogAndComments(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	d, err := newTestJiraPuller(t, srv.URL).FetchIssueDetail(context.Background(), "CD-2")
-	if err != nil {
-		t.Fatalf("fetch: %v", err)
+	iss := &cache.JiraIssue{Key: "CD-2"}
+	if err := newTestJiraPuller(t, srv.URL).HydrateIssue(context.Background(), iss, time.Unix(1_700_000_000, 0)); err != nil {
+		t.Fatalf("hydrate: %v", err)
 	}
-	if len(d.Comments) != 2 {
-		t.Fatalf("want 2 comments after paging, got %d", len(d.Comments))
+	if len(iss.Comments) != 2 {
+		t.Fatalf("want 2 comments after paging, got %d", len(iss.Comments))
 	}
-	if len(d.Changelog) != 2 {
-		t.Fatalf("want 2 status transitions after paging, got %d", len(d.Changelog))
-	}
-}
-
-func TestFetchIssueDetail_NotFoundIsUnreachable(t *testing.T) {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/rest/api/3/issue/CD-404", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	_, err := newTestJiraPuller(t, srv.URL).FetchIssueDetail(context.Background(), "CD-404")
-	if !errors.Is(err, ErrIssueUnreachable) {
-		t.Fatalf("err = %v, want ErrIssueUnreachable", err)
+	if len(iss.Changelog) != 2 {
+		t.Fatalf("want 2 status transitions after paging, got %d", len(iss.Changelog))
 	}
 }
 
-func TestHydrateIssueDetail_PermSkipMarksFetched(t *testing.T) {
+func TestHydrateIssue_PermSkipFreezesSentinels(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/rest/api/3/issue/CD-404", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -167,15 +165,15 @@ func TestHydrateIssueDetail_PermSkipMarksFetched(t *testing.T) {
 	defer srv.Close()
 
 	iss := &cache.JiraIssue{Key: "CD-404"}
-	err := newTestJiraPuller(t, srv.URL).HydrateIssueDetail(context.Background(), iss, time.Unix(1_700_000_000, 0))
+	err := newTestJiraPuller(t, srv.URL).HydrateIssue(context.Background(), iss, time.Unix(1_700_000_000, 0))
 	if !errors.Is(err, ErrIssueUnreachable) {
 		t.Fatalf("err = %v, want ErrIssueUnreachable", err)
 	}
 	if !iss.DetailFetched || iss.DetailFetchedAt == nil {
 		t.Fatal("perm-skip should still mark DetailFetched so it isn't retried forever")
 	}
-	if iss.Changelog == nil || iss.Comments == nil {
-		t.Fatal("perm-skip should leave non-nil (empty) changelog/comments sentinels")
+	if iss.Changelog == nil || iss.Comments == nil || iss.Links == nil || iss.Attachments == nil || iss.RawFields == nil {
+		t.Fatal("perm-skip should freeze all sentinels non-nil so the issue isn't re-selected")
 	}
 }
 

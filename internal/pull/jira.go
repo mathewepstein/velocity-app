@@ -249,12 +249,20 @@ func (p *JiraPuller) decodeIssue(r jiraIssueRaw) cache.JiraIssue {
 		}
 	}
 
-	// Relationships are requested on every base search, so initialize the
-	// sentinel slices to non-nil empty: a freshly-pulled issue is "relations
-	// captured" even when it has none (distinguishes it from a pre-capture
-	// historical issue, which reads back nil).
+	setRelations(&iss, f)
+	return iss
+}
+
+// setRelations parses subtasks + issue links, attachments, and fix versions
+// from a Jira issue `fields` map onto iss. Shared by the base-search decode and
+// the `fields=*all` field-capture hydration. The Links + Attachments sentinel
+// slices are initialized non-nil (and FixVersions reset), so an issue run
+// through this is "relations captured" even with none — distinct from a
+// pre-capture historical issue that reads back nil.
+func setRelations(iss *cache.JiraIssue, f map[string]interface{}) {
 	iss.Links = []cache.LinkedIssue{}
 	iss.Attachments = []cache.Attachment{}
+	iss.FixVersions = nil
 
 	if arr, ok := f["subtasks"].([]interface{}); ok {
 		for _, a := range arr {
@@ -303,7 +311,6 @@ func (p *JiraPuller) decodeIssue(r jiraIssueRaw) cache.JiraIssue {
 			}
 		}
 	}
-	return iss
 }
 
 // linkedFrom builds a LinkedIssue from a counterpart issue object (subtask or

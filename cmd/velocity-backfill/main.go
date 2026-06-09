@@ -2,8 +2,10 @@
 // pull doesn't fetch, walking the month-partitioned cache via the shared
 // internal/backfill runner. Phases:
 //
-//	--phase jira-detail   per-issue changelog + comments + description (+ derived
-//	                      cycle-time / rework / pre-code signals)
+//	--phase jira          one comprehensive per-issue pull (fields=*all):
+//	                      description, changelog, comments, links/subtasks,
+//	                      attachments, fix versions, the raw field catch-all, and
+//	                      derived cycle-time / rework / pre-code signals
 //	--phase pr-comments   per-merged-PR inline review comments (+ derived
 //	                      inline-comment / deep-thread counts)
 //	--phase file-changes  per-merged-PR per-file status + LOC (FileChanges)
@@ -64,7 +66,7 @@ type opts struct {
 
 func parseFlags() opts {
 	var o opts
-	flag.StringVar(&o.phase, "phase", "", "Backfill phase to run: jira-detail | pr-comments | file-changes")
+	flag.StringVar(&o.phase, "phase", "", "Backfill phase to run: jira | pr-comments | file-changes")
 	flag.Float64Var(&o.qps, "qps", 5, "Request-rate ceiling (req/s). The adaptive governor paces under it; Jira has no fixed limit so a high baseline is fine — a 429's Retry-After is the hard backstop.")
 	flag.BoolVar(&o.dryRun, "dry-run", false, "Count records needing hydration; don't call the API")
 	flag.IntVar(&o.limit, "limit", 0, "Stop after hydrating this many records (0 = no limit). Useful for smoke tests.")
@@ -80,7 +82,7 @@ func parseFlags() opts {
 func run() error {
 	o := parseFlags()
 	if o.phase == "" {
-		return errors.New("--phase is required (jira-detail | pr-comments | file-changes)")
+		return errors.New("--phase is required (jira | pr-comments | file-changes)")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -108,18 +110,20 @@ func run() error {
 	}
 
 	switch o.phase {
-	case "jira-detail":
-		return runJiraDetail(ctx, cfg, manifest, store, o, minInterval)
+	case "jira", "jira-detail", "jira-fields":
+		// One comprehensive Jira hydration. jira-detail/jira-fields are kept as
+		// aliases for the now-unified phase so existing invocations don't break.
+		return runJiraPhase(ctx, cfg, manifest, store, o, minInterval, detail.JiraPhase)
 	case "pr-comments":
 		return runGithubPRPhase(ctx, cfg, manifest, store, o, minInterval, detail.PRCommentsPhase)
 	case "file-changes":
 		return runGithubPRPhase(ctx, cfg, manifest, store, o, minInterval, detail.FileChangesPhase)
 	default:
-		return fmt.Errorf("unknown --phase %q (supported: jira-detail, pr-comments, file-changes)", o.phase)
+		return fmt.Errorf("unknown --phase %q (supported: jira, pr-comments, file-changes)", o.phase)
 	}
 }
 
-func runJiraDetail(ctx context.Context, cfg *config.Config, manifest *cache.Manifest, store cache.Store, o opts, minInterval time.Duration) error {
+func runJiraPhase(ctx context.Context, cfg *config.Config, manifest *cache.Manifest, store cache.Store, o opts, minInterval time.Duration, buildPhase func(*pull.JiraPuller, detail.PrintfFunc) backfill.Phase[cache.JiraIssue]) error {
 	profile := cfg.ActiveProfile()
 
 	token := ""
@@ -147,7 +151,7 @@ func runJiraDetail(ctx context.Context, cfg *config.Config, manifest *cache.Mani
 		Reporter:        bar,
 	}
 
-	st, err := backfill.Run(ctx, detail.JiraDetailPhase(puller, bar.Printf), manifest, store, runOpts)
+	st, err := backfill.Run(ctx, buildPhase(puller, bar.Printf), manifest, store, runOpts)
 	bar.Printf("\nfinal: %d hydrated, %d unreachable (marked fetched), %d already-done, %d candidates seen\n",
 		st.Hydrated, st.SkippedPerm, st.AlreadyDone, st.Candidates)
 	return err

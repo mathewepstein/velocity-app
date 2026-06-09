@@ -28,18 +28,22 @@ import (
 // line first — progress.Bar.Printf does this atomically).
 type PrintfFunc func(format string, args ...interface{})
 
-// JiraDetailPhase hydrates per-issue changelog + comments + description.
-// Resolved issues are fetched once (their history is frozen); open issues
-// re-hydrate every run since their changelog/comments keep changing.
-func JiraDetailPhase(p *pull.JiraPuller, printf PrintfFunc) backfill.Phase[cache.JiraIssue] {
+// JiraPhase is the single comprehensive per-issue hydration: one fields=*all
+// pull capturing description, changelog, comments, relationships (subtasks +
+// links), attachments, fix versions, and the raw field catch-all, then the
+// derived cycle/rework/pre-code signals. NeedsWork re-hydrates any issue not yet
+// fully captured (never detail-fetched, or no raw fields — e.g. a cell the base
+// pull just rewrote) and every open issue each run (its changelog/comments/
+// fields keep changing); resolved issues are captured once and frozen.
+func JiraPhase(p *pull.JiraPuller, printf PrintfFunc) backfill.Phase[cache.JiraIssue] {
 	return backfill.Phase[cache.JiraIssue]{
-		Name:   "jira-detail",
+		Name:   "jira",
 		Source: cache.SourceJira,
 		NeedsWork: func(iss *cache.JiraIssue) bool {
-			return !iss.DetailFetched || iss.Resolved == nil
+			return !iss.DetailFetched || iss.RawFields == nil || iss.Resolved == nil
 		},
 		Fetch: func(ctx context.Context, iss *cache.JiraIssue) (backfill.Outcome, error) {
-			if err := p.HydrateIssueDetail(ctx, iss, time.Now()); err != nil {
+			if err := p.HydrateIssue(ctx, iss, time.Now()); err != nil {
 				if errors.Is(err, pull.ErrIssueUnreachable) {
 					printf("[perm-skip] %s: %v\n", iss.Key, err)
 					return backfill.PermSkip, nil
@@ -262,8 +266,8 @@ func Hydrate(ctx context.Context, profile config.Profile, t pull.Tokens, o Hydra
 		go func() {
 			defer wg.Done()
 			defer rep.EnterCell("") // retire the lane from the status line
-			st, err := backfill.Run(ctx, JiraDetailPhase(puller, printf), manifest, o.Store, opts)
-			printf("[jira-detail] %d hydrated, %d unreachable, %d already-done\n",
+			st, err := backfill.Run(ctx, JiraPhase(puller, printf), manifest, o.Store, opts)
+			printf("[jira] %d hydrated, %d unreachable, %d already-done\n",
 				st.Hydrated, st.SkippedPerm, st.AlreadyDone)
 			jiraErr = err
 		}()

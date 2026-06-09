@@ -220,7 +220,13 @@ func pickMostPopulated(stats []FieldStat, match func(name string) bool) (FieldSt
 	return FieldStat{}, false
 }
 
-func isNoise(name string) bool {
+func isNoise(name string) bool { return IsNoiseFieldName(name) }
+
+// IsNoiseFieldName reports whether a Jira field's display name marks it as
+// JSM / HR / finance / SLA noise rather than an engineering-effort signal.
+// Exported so the field-capture crawl applies the SAME denylist as the wizard —
+// one source of truth for what the raw catch-all excludes.
+func IsNoiseFieldName(name string) bool {
 	n := strings.ToLower(strings.TrimSpace(name))
 	for _, kw := range noiseKeywords {
 		if strings.Contains(n, kw) {
@@ -229,6 +235,11 @@ func isNoise(name string) bool {
 	}
 	return false
 }
+
+// IsPopulated reports whether a raw Jira field value (as decoded from JSON)
+// carries real content. Exported for the field-capture crawl so the raw
+// catch-all stores only populated fields, by the same rule the wizard tallies.
+func IsPopulated(v interface{}) bool { return isPopulated(v) }
 
 // sortStats orders by population desc, then name asc for stable output.
 func sortStats(stats []FieldStat) {

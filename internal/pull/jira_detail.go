@@ -13,84 +13,114 @@ import (
 	"github.com/mathewepstein/velocity/internal/cache"
 )
 
-// ErrIssueUnreachable is returned by FetchIssueDetail when Jira responds with a
-// status that won't recover on retry (404 issue moved/deleted, 410 gone). The
-// backfill phase marks the issue DetailFetched so it isn't retried forever.
+// ErrIssueUnreachable is returned by the per-issue hydration when Jira responds
+// with a status that won't recover on retry (404 issue moved/deleted, 410
+// gone). The backfill phase marks the issue fetched so it isn't retried forever.
 var ErrIssueUnreachable = errors.New("issue unreachable")
 
-// IssueDetail is the hydrated per-issue detail: the flattened description (plus
-// any URLs it references), the status-transition changelog, and the comments.
-// Raw signals only — derivation happens in DeriveIssueSignals.
-type IssueDetail struct {
-	Description string
-	DescURLs    []string
-	Changelog   []cache.StatusTransition // status field changes only, chronological
-	Comments    []cache.IssueComment
-}
-
-// FetchIssueDetail pulls one issue's changelog + comments + description in a
-// single base call (expand=changelog, fields=comment,description) and pages the
-// changelog/comments when Jira truncates them on long-lived tickets, so nothing
-// is silently lost. Only status-field changelog entries are kept — that's the
-// cycle-time / rework signal; other field edits are noise for our purposes.
-func (p *JiraPuller) FetchIssueDetail(ctx context.Context, key string) (IssueDetail, error) {
-	esc := url.PathEscape(key)
-	raw, err := p.getIssueDetail(ctx, esc)
+// HydrateIssue is the single comprehensive per-issue pull. One
+// fields=*all&expand=changelog,names GET (changelog + comments paged when Jira
+// truncates them on long-lived tickets) captures everything the base search
+// doesn't: the mapped description, the status changelog, comments, subtasks +
+// issue links, attachments, fix versions, and the raw field catch-all — then
+// derives the cycle-time / rework / pre-code signals. It is the one Jira
+// hydration path: `velocity refresh` runs it after the base pull, and
+// `velocity-backfill --phase jira` runs it over the corpus.
+//
+// Resume gates: DetailFetched + RawFields, both set non-nil on success. On a
+// permanent 404/410 every sentinel is frozen (empty, non-nil) and
+// ErrIssueUnreachable is returned so the caller records a perm-skip and never
+// retries.
+func (p *JiraPuller) HydrateIssue(ctx context.Context, iss *cache.JiraIssue, now time.Time) error {
+	esc := url.PathEscape(iss.Key)
+	full, err := p.getIssueFull(ctx, esc)
 	if err != nil {
-		return IssueDetail{}, err
+		if errors.Is(err, ErrIssueUnreachable) {
+			iss.Changelog = []cache.StatusTransition{}
+			iss.Comments = []cache.IssueComment{}
+			iss.Links = []cache.LinkedIssue{}
+			iss.Attachments = []cache.Attachment{}
+			iss.RawFields = []cache.RawField{}
+			iss.DetailFetched = true
+			t := now.UTC()
+			iss.DetailFetchedAt = &t
+		}
+		return err
 	}
 
-	var d IssueDetail
-	if rawDesc, ok := raw.Fields[p.descriptionField()]; ok {
-		var descVal interface{}
-		if err := json.Unmarshal(rawDesc, &descVal); err == nil && descVal != nil {
-			adf := flattenADF(descVal)
-			d.Description = adf.Text
-			d.DescURLs = adf.URLs
-		}
+	// Description: mapped field, falling back to the standard field so an issue
+	// whose content only lived in the standard one is never blanked.
+	if d := descriptionText(full.Fields, p.descriptionField()); d != "" {
+		iss.Description = d
+	} else if d := descriptionText(full.Fields, "description"); d != "" {
+		iss.Description = d
 	}
 
-	// Comments: first page is embedded; page the rest if truncated.
-	var comment jiraCommentPage
-	if rawCmt, ok := raw.Fields["comment"]; ok {
-		if err := json.Unmarshal(rawCmt, &comment); err != nil {
-			return IssueDetail{}, fmt.Errorf("decode comments %s: %w", key, err)
-		}
-	}
-	d.Comments = decodeComments(comment.Comments)
-	cp := comment
+	// Comments: first page is embedded in the comment field; page the rest.
+	cp := extractCommentPage(full.Fields)
+	comments := decodeComments(cp.Comments)
 	for cp.StartAt+len(cp.Comments) < cp.Total {
 		next, err := p.getCommentPage(ctx, esc, cp.StartAt+len(cp.Comments))
 		if err != nil {
-			return IssueDetail{}, err
+			return err
 		}
 		if len(next.Comments) == 0 {
 			break // defensive: avoid an infinite loop on a lying Total
 		}
-		d.Comments = append(d.Comments, decodeComments(next.Comments)...)
+		comments = append(comments, decodeComments(next.Comments)...)
 		cp = next
 	}
+	if comments == nil {
+		comments = []cache.IssueComment{}
+	}
+	iss.Comments = comments
 
-	// Changelog: first page is embedded; page the rest if truncated.
-	d.Changelog = decodeStatusTransitions(raw.Changelog.Histories)
-	clTotal := raw.Changelog.Total
-	got := raw.Changelog.StartAt + len(raw.Changelog.Histories)
-	for got < clTotal {
+	// Changelog: first page is embedded via expand=changelog; page the rest.
+	changelog := decodeStatusTransitions(full.Changelog.Histories)
+	got := full.Changelog.StartAt + len(full.Changelog.Histories)
+	for got < full.Changelog.Total {
 		next, err := p.getChangelogPage(ctx, esc, got)
 		if err != nil {
-			return IssueDetail{}, err
+			return err
 		}
 		if len(next.Values) == 0 {
 			break
 		}
-		d.Changelog = append(d.Changelog, decodeStatusTransitions(next.Values)...)
+		changelog = append(changelog, decodeStatusTransitions(next.Values)...)
 		got = next.StartAt + len(next.Values)
 		if next.IsLast {
 			break
 		}
 	}
+	if changelog == nil {
+		changelog = []cache.StatusTransition{}
+	}
+	iss.Changelog = changelog
 
-	return d, nil
+	setRelations(iss, full.Fields)
+	iss.RawFields = buildRawFields(full.Fields, full.Names)
+	DeriveIssueSignals(iss)
+
+	iss.DetailFetched = true
+	t := now.UTC()
+	iss.DetailFetchedAt = &t
+	return nil
+}
+
+// extractCommentPage pulls the first comment page out of the *all field map
+// (the `comment` field) by re-decoding it into the typed page shape.
+func extractCommentPage(fields map[string]interface{}) jiraCommentPage {
+	raw, ok := fields["comment"]
+	if !ok {
+		return jiraCommentPage{}
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return jiraCommentPage{}
+	}
+	var cp jiraCommentPage
+	_ = json.Unmarshal(b, &cp)
+	return cp
 }
 
 // descriptionField is the Jira field the description is read from: the mapped
@@ -104,25 +134,36 @@ func (p *JiraPuller) descriptionField() string {
 	return "description"
 }
 
-// getIssueDetail does the base issue call and classifies permanent failures.
-func (p *JiraPuller) getIssueDetail(ctx context.Context, escapedKey string) (jiraDetailRaw, error) {
-	path := fmt.Sprintf("/rest/api/3/issue/%s?expand=changelog&fields=comment,%s", escapedKey, p.descriptionField())
+// getIssueFull does the one comprehensive issue call: every field
+// (fields=*all), the field-name map (expand=names), and the inline changelog
+// (expand=changelog). Permanent 404/410 is classified as ErrIssueUnreachable.
+func (p *JiraPuller) getIssueFull(ctx context.Context, escapedKey string) (issueFull, error) {
+	path := fmt.Sprintf("/rest/api/3/issue/%s?fields=*all&expand=changelog,names", escapedKey)
 	resp, body, err := p.do(ctx, path)
 	if err != nil {
-		return jiraDetailRaw{}, err
+		return issueFull{}, err
 	}
 	switch resp.StatusCode {
 	case http.StatusNotFound, http.StatusGone:
-		return jiraDetailRaw{}, fmt.Errorf("issue %s: %d %s: %w", escapedKey, resp.StatusCode, http.StatusText(resp.StatusCode), ErrIssueUnreachable)
+		return issueFull{}, fmt.Errorf("issue %s: %d %s: %w", escapedKey, resp.StatusCode, http.StatusText(resp.StatusCode), ErrIssueUnreachable)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return jiraDetailRaw{}, fmt.Errorf("GET issue %s → %d: %s", escapedKey, resp.StatusCode, truncate(body, 200))
+		return issueFull{}, fmt.Errorf("GET issue %s → %d: %s", escapedKey, resp.StatusCode, truncate(body, 200))
 	}
-	var out jiraDetailRaw
+	var out issueFull
 	if err := json.Unmarshal(body, &out); err != nil {
-		return jiraDetailRaw{}, fmt.Errorf("decode issue %s: %w", escapedKey, err)
+		return issueFull{}, fmt.Errorf("decode issue %s: %w", escapedKey, err)
 	}
 	return out, nil
+}
+
+// issueFull is the comprehensive per-issue response: the full field map (for
+// description, relations, and the raw catch-all), the field-name map, and the
+// inline changelog.
+type issueFull struct {
+	Fields    map[string]interface{} `json:"fields"`
+	Names     map[string]string      `json:"names"`
+	Changelog jiraChangelogEmbedded  `json:"changelog"`
 }
 
 func (p *JiraPuller) getCommentPage(ctx context.Context, escapedKey string, startAt int) (jiraCommentPage, error) {
@@ -275,47 +316,7 @@ func DeriveIssueSignals(iss *cache.JiraIssue) {
 	}
 }
 
-// HydrateIssueDetail fetches detail for one issue and writes the raw signals +
-// derived fields into iss, flipping the DetailFetched resume gate. On a
-// permanent (unreachable) error it still marks the issue fetched — with empty
-// (non-nil) changelog/comments — so resolved issues aren't retried forever; it
-// returns ErrIssueUnreachable so the caller can classify it as a perm-skip.
-func (p *JiraPuller) HydrateIssueDetail(ctx context.Context, iss *cache.JiraIssue, now time.Time) error {
-	d, err := p.FetchIssueDetail(ctx, iss.Key)
-	if err != nil {
-		if errors.Is(err, ErrIssueUnreachable) {
-			iss.Changelog = []cache.StatusTransition{}
-			iss.Comments = []cache.IssueComment{}
-			iss.DetailFetched = true
-			t := now.UTC()
-			iss.DetailFetchedAt = &t
-		}
-		return err
-	}
-
-	iss.Description = d.Description
-	if iss.Changelog = d.Changelog; iss.Changelog == nil {
-		iss.Changelog = []cache.StatusTransition{}
-	}
-	if iss.Comments = d.Comments; iss.Comments == nil {
-		iss.Comments = []cache.IssueComment{}
-	}
-	DeriveIssueSignals(iss)
-	iss.DetailFetched = true
-	t := now.UTC()
-	iss.DetailFetchedAt = &t
-	return nil
-}
-
 // ---------- raw response shapes ----------
-
-// jiraDetailRaw keeps Fields as a keyed map so the description can be read from
-// whichever (possibly custom) field the mapping points at — a fixed struct tag
-// can't express a per-org custom field ID. comment is always the standard key.
-type jiraDetailRaw struct {
-	Fields    map[string]json.RawMessage `json:"fields"`
-	Changelog jiraChangelogEmbedded      `json:"changelog"`
-}
 
 type jiraCommentPage struct {
 	Comments   []jiraCommentRaw `json:"comments"`

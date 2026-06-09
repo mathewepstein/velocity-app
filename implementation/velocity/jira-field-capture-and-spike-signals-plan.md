@@ -3,7 +3,7 @@
 **Created:** 2026-06-08
 **Last edited:** 2026-06-08
 **Owner:** Mathew Epstein
-**Status:** Phases A + B DONE + VALIDATED 2026-06-08 (uncommitted; build/vet/`test ./...` green, 15 pkgs). Phase C (the one final crawl) is next — the schema/store now hold everything; C populates it. Phases C–E not started. Supersedes the narrower `spike-link-signals-plan.md` (folded in as Phase D).
+**Status:** Phases A + B DONE + VALIDATED. **Phase C (the one final crawl) BUILT + LAUNCHED 2026-06-08** — running over the full 23,601-issue corpus (`velocity-backfill --phase jira-fields`, ~85 min, resumable, log at `~/velocity-jira-fields-backfill.log`). Phases D–E not started. Supersedes the narrower `spike-link-signals-plan.md` (folded in as Phase D). Code uncommitted; build/vet/`test ./...` green, 15 pkgs.
 
 ## Why this exists
 
@@ -45,18 +45,35 @@ So this plan widens the scope: **one final historical crawl that grabs every rel
 
 **Validation:** `go build ./...`, `go vet ./...`, `go test ./...` (15 pkgs) all green. No `velocity.db` mutation; no Jira writes. Pending commit + `make install`.
 
-## Phase B — Broaden ingest + cache (mapping-driven)
+## Phase B — Broaden ingest + cache (mapping-driven) — DONE 2026-06-08
 
-- **`internal/pull/jira.go`:** `JiraPuller` resolves the full mapping (not just `storyPointsID`/`epicLinkID`). `decodeIssue` reads `description`/`steps_to_reproduce`/etc. from mapped IDs (ADF-flatten via existing `adf.go`). Forward pulls add `issuelinks`, `subtasks`, `attachment`, `fixVersions`, `versions` to `jiraBaseFields` (free in the search page). Drop sprint.
-- **Records (`internal/cache/records.go`):** add to `JiraIssue`: `Links []LinkedIssue` (subtasks+issuelinks, sentinel nil-vs-empty), `Attachments []Attachment` (or `AttachmentCount int` + child), `FixVersions []string`, `Flagged bool`, time-tracking scalars, and a `RawFields map[string]string` (or via the catch-all table) per the storage fork. Description now sourced from the mapped field.
-- **Schema (`internal/cache/sqlite_schema.go`):** new child tables `jira_issue_links`, `jira_attachments`, `jira_fix_versions`, and (if recommended fork) `jira_issue_fields` raw catch-all. New scalar columns (flagged, time-tracking seconds). Add `*_fetched` sentinel column(s). Register all in `allRecordTables`. Migration in `migrate.go` mirroring how `changelog_fetched`/`comments_fetched`/their tables were introduced (read that first; match exactly).
-- **Store I/O (`internal/cache/sqlite_jira.go`):** read/write the new child tables + columns, round-tripping nil-vs-empty sentinels exactly as `Changelog`/`Comments` do.
+**Typed boundary (LOCKED by Mathew):** typed storage only for fields with a real use — **links, attachments, fixVersions**. Flagged, time-tracking, priority, etc. ride the raw catch-all (no consumer-less typed columns — same rule as the StepsToReproduce drop).
 
-## Phase C — One final historical backfill
+**Built:**
+- **Records (`internal/cache/records.go`):** new types `LinkedIssue` (key/link_type/direction/phrase/status/issue_type), `Attachment` (filename/mime_type/size/created/author), `RawField` (id/name/value-JSON). New `JiraIssue` fields: `Links []LinkedIssue` + `Attachments []Attachment` (sentinel, no omitempty), `FixVersions []string` (omitempty like Labels), `RawFields []RawField` (sentinel, Phase-C-populated).
+- **Schema (`sqlite_schema.go`):** child tables `jira_issue_links`, `jira_attachments`, `jira_fix_versions`, `jira_issue_fields` (raw catch-all). Two flag columns on `jira_issues`: `relations_fetched` (gates Links+Attachments), `raw_fields_fetched` (gates RawFields — also Phase C's backfill gate). All registered in `allRecordTables` (children before parent).
+- **Migration (`sqlite.go`):** no migration framework existed (schema is `CREATE TABLE IF NOT EXISTS` only). New tables auto-create; the two new columns are added by a new idempotent `migrateSchema`/`addMissingColumns` (PRAGMA `table_info` → `ALTER TABLE ADD COLUMN`), called in `openSQLiteStore` after the base schema. Safe on the live 23.6k-issue DB: existing rows default to 0 → read back as uncaptured (nil).
+- **Store I/O (`sqlite_jira.go`):** `WriteJiraIssues`/`ReadJiraIssues` write+read all four child tables + the two flag columns, round-tripping the nil-vs-empty sentinels exactly like `Changelog`/`Comments`.
+- **Ingest (`pull/jira.go`):** `JiraPuller` gained `descriptionID` from `Fields.Description`. `jiraBaseFields` gained `issuelinks`, `subtasks`, `attachment`, `fixVersions` (free in the search page). `decodeIssue` parses all four into `Links`/`Attachments`/`FixVersions`, initializing Links+Attachments non-nil (forward pulls = "relations captured"). Sprint: nothing to drop (was never requested). `versions` (affects-versions) skipped — only fixVersions per Mathew.
+- **Description remap (`pull/jira_detail.go`):** detail fetch path now `fields=comment,<descriptionField()>` (mapped id, else standard `description`); `jiraDetailRaw.Fields` refactored to `map[string]json.RawMessage` so the description reads from a per-org custom field. Flows through both `refresh.go` (base) and `detail.go` (hydration) since both build the puller from `profile.Jira`.
+- **Tests:** `sqlite_test.go` — `TestSQLite_JiraRelationsAndFieldsRoundTrip` (full round-trip + nil/empty sentinels for links/attachments/raw), `TestMigrateSchema_ColumnsPresentAndIdempotent`, `TestAddMissingColumns_AddsAndSkips`. Existing pull/detail tests still green.
 
-- New backfill phase(s) via `internal/backfill` runner, gated on a new sentinel (e.g. `fields_v2_fetched`), `Fetch` = GET `/issue/{key}?fields=*all&expand=names` per candidate, populating links/attachments/fixVersions/description-remap/flagged/time-tracking + the raw catch-all. One ~23.6k-issue one-time pass, paced + resume-safe.
-- Re-mapped **description** backfills here too (closes the 71% gap) — verify coverage lifts before/after.
-- Sets sentinels (incl. `[]`/empty on permanent 404/410) so resolved issues freeze.
+**Validation:** `go build ./...`, `go vet ./...`, `go test ./...` (15 pkgs) all green. No live `velocity.db` mutation (migration deliberately not triggered on the real DB — runs on `make install` + next command). Pending commit + `make install`.
+
+**Note for Phase C:** the raw catch-all (`RawFields`/`jira_issue_fields`) and the description-remap of *historical* (already-`detail_fetched`, frozen) issues are populated by the Phase C `*all` crawl — the detail-path remap only fixes *forward* hydration. `raw_fields_fetched` is the crawl's `NeedsWork` gate.
+
+## Phase C — One final historical backfill — BUILT + LAUNCHED 2026-06-08
+
+**Built:**
+- **`pull.HydrateIssueFields`** (`internal/pull/jira_fields.go`): GET `/issue/{key}?fields=*all&expand=names` → `setRelations` (extracted from `decodeIssue`, shared) + remapped description (mapped field, falls back to standard so it never blanks) + `buildRawFields` (every populated field minus the noise denylist, JSON-encoded, ID-sorted for byte-stable rows). On permanent 404/410 → freezes sentinels (`RawFields=[]`) + returns `ErrIssueUnreachable`.
+- **Denylist reuse:** exported `jirafields.IsNoiseFieldName` + `IsPopulated` so the crawl applies the exact same noise filter as the wizard (one source of truth).
+- **`detail.JiraFieldsPhase`**: `NeedsWork = RawFields == nil` (fetch once, frozen — raw fields don't drift like changelog), perm-skip on unreachable. Wired into `cmd/velocity-backfill` as `--phase jira-fields` (generalized `runJiraDetail` → `runJiraPhase`).
+- **Config:** `description = "customfield_11140"` added to `~/.config/velocity/config.toml` (was unset). `story_points` left at `customfield_10128` (band engine calibrated on it; wizard's `customfield_11102` is a parallel field — both land in the raw catch-all; flagged for later curation).
+- **Tests:** `pull/jira_fields_test.go` — `setRelations` (subtask + inward/outward links + attachments + fixVersions), non-nil-empty sentinel, `buildRawFields` (noise/null/zero excluded, JSON values, ID-sorted).
+
+**Validated live (read-only-then-bounded):** dry-run = 23,601 candidates. `--limit 5` live run hydrated 5 — DB confirmed `relations_fetched=1`/`raw_fields_fetched=1`, **descriptions populated on 2019 issues that had empty standard descriptions** (the remap works on frozen historical issues), 27–30 raw fields each, fix versions captured.
+
+**Running:** full corpus launched (background, ~85 min, ~5 issues/s). Resumable — a re-run continues from `raw_fields_fetched`. Note: `comment` and `Sprint` land in the raw catch-all (comment bodies duplicate `jira_comments`; watch DB growth, grow denylist if needed).
 
 ## Phase D — Spike link/child signals (original ask)
 

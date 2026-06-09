@@ -48,6 +48,16 @@ func bandSpike(ev *TicketEvidence, cfg config.StoryPointsConfig) BandResult {
 		add(1.0, "Status churn: %d transitions", ev.StatusFlips)
 	}
 
+	// Relationship corroboration: follow-up tickets the investigation spawned, and
+	// the breadth of its link graph. Both are conservative nudges — the quadrant
+	// base still carries the weight — and only fire when the signal is present.
+	if ev.SpawnedCount > 0 {
+		add(float64(ev.SpawnedCount)*sc.SpawnedWeight, "Spawned %d follow-up ticket(s)", ev.SpawnedCount)
+	}
+	if sc.BreadthThreshold > 0 && ev.LinkBreadth > sc.BreadthThreshold {
+		add(float64(ev.LinkBreadth-sc.BreadthThreshold)*sc.BreadthWeight, "Linked to %d related ticket(s)", ev.LinkBreadth)
+	}
+
 	raw := base + thinking
 	points, band, straddle := snap(raw, scale, cfg.StraddleFraction)
 
@@ -68,7 +78,7 @@ func bandSpike(ev *TicketEvidence, cfg config.StoryPointsConfig) BandResult {
 	}
 
 	res.HardestAspectHint, res.SignalSummary = explainSpike(ev, drivers, cycleDays, artifacts, cell)
-	res.Confidence, res.NeedsInsight, res.InsightReason = judgeSpike(longCycle, highArtifacts, artifacts, ev.StatusFlips, straddle)
+	res.Confidence, res.NeedsInsight, res.InsightReason = judgeSpike(longCycle, highArtifacts, artifacts, ev.StatusFlips, ev.SpawnedCount, straddle)
 	return res
 }
 
@@ -92,9 +102,11 @@ func spikeQuadrant(sc config.SpikeConfig, longCycle, highArtifacts bool) (float6
 // suppressed (a spike has none by design). It flags the one genuinely ambiguous
 // case: a multi-day cycle with no recorded artifacts and little churn — the
 // elapsed time could be real investigation or just dormancy, and only a human
-// can tell. A well-evidenced spike is confident; a thin short one is medium.
-func judgeSpike(longCycle, highArtifacts bool, artifacts, statusFlips int, straddle bool) (confidence string, needsInsight bool, reason string) {
-	if longCycle && artifacts == 0 && statusFlips < 4 {
+// can tell. Spawned follow-up work is itself investigation output, so it lifts
+// the dormancy doubt and suppresses the flag. A well-evidenced spike is
+// confident; a thin short one is medium.
+func judgeSpike(longCycle, highArtifacts bool, artifacts, statusFlips, spawned int, straddle bool) (confidence string, needsInsight bool, reason string) {
+	if longCycle && artifacts == 0 && statusFlips < 4 && spawned == 0 {
 		return "low", true, "Multi-day spike with no recorded artifacts — elapsed time may be dormancy, not investigation; confirm effort"
 	}
 	if highArtifacts && longCycle {

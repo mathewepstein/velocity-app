@@ -2,8 +2,10 @@ package pull
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"time"
 
 	"github.com/mathewepstein/velocity/internal/cache"
@@ -205,12 +207,45 @@ func refreshJira(ctx context.Context, printf func(string, ...interface{}), rep p
 	if err != nil {
 		return fmt.Errorf("jira %s %s: %w", project, m, err)
 	}
+	// Carry forward hydration for issues whose `updated` hasn't advanced since
+	// the last pull, so the detail stage only re-hydrates new/changed issues
+	// instead of the whole (always-re-pulled) current month.
+	if existing, rerr := opts.Store.ReadJiraIssues(project, m); rerr == nil {
+		issues = mergeHydration(existing, issues)
+	} else if !errors.Is(rerr, fs.ErrNotExist) {
+		return fmt.Errorf("read existing jira %s %s: %w", project, m, rerr)
+	}
 	if err := opts.Store.WriteJiraIssues(project, m, issues); err != nil {
 		return err
 	}
 	mf.Update(source, project, m, len(issues), opts.Now)
 	printf("  %s/%s — %d issues\n", source, project, len(issues))
 	return nil
+}
+
+// mergeHydration carries forward the already-hydrated cache record for any
+// freshly-pulled issue whose `updated` timestamp hasn't advanced — so the
+// wholesale month-cell rewrite no longer nulls hydration the detail stage would
+// just have to redo. Jira's `updated` advances on every change we capture
+// (comments, status, fields, links), so an unchanged `updated` means the cached
+// record is still complete and the cheap base fields are unchanged too; a new
+// or `updated`-advanced issue passes through as the fresh base record for the
+// detail stage to hydrate. The output set is exactly `fresh` (issues that aged
+// out of the window are dropped as before), in `fresh` order for stable ord.
+func mergeHydration(existing, fresh []cache.JiraIssue) []cache.JiraIssue {
+	prior := make(map[string]cache.JiraIssue, len(existing))
+	for _, e := range existing {
+		prior[e.Key] = e
+	}
+	out := make([]cache.JiraIssue, 0, len(fresh))
+	for _, f := range fresh {
+		if c, ok := prior[f.Key]; ok && c.DetailFetched && c.RawFields != nil && c.Updated.Equal(f.Updated) {
+			out = append(out, c) // unchanged → keep the fully-hydrated cached record
+			continue
+		}
+		out = append(out, f) // new or changed → fresh base record; detail stage hydrates it
+	}
+	return out
 }
 
 func refreshGithub(ctx context.Context, printf func(string, ...interface{}), rep progress.Reporter, gp *GithubPuller, mf *cache.Manifest, org string, m cache.Month, opts RefreshOptions) error {

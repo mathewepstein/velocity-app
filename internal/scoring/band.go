@@ -42,7 +42,7 @@ func Band(ev *TicketEvidence, cfg config.StoryPointsConfig) BandResult {
 	// PR-less investigation tickets are routed to the spike scorer (cycle ×
 	// artifact-density), bypassing the LOC quadrant and the "no PR → flag low"
 	// gate that would otherwise mis-score them.
-	if isSpike(ev) && len(ev.PRs) == 0 {
+	if IsSpike(ev) && len(ev.PRs) == 0 {
 		return bandSpike(ev, cfg)
 	}
 

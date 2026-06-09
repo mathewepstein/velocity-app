@@ -63,6 +63,61 @@ func TestBandSpike_MultiDayNoArtifactsFlagged(t *testing.T) {
 	}
 }
 
+// Spawned follow-up work is investigation output: a multi-day, zero-artifact
+// spike that spawned tickets must NOT be flagged as possible dormancy, and the
+// spawn count surfaces as a driver.
+func TestBandSpike_SpawnedWorkSuppressesDormancyFlag(t *testing.T) {
+	ev := spikeEv()
+	ev.CycleHours = 120 // multi-day
+	ev.ActiveCycleHours = 120
+	ev.ArtifactLinks = 0
+	ev.SubstantiveComments = 0
+	ev.StatusFlips = 1
+	ev.SpawnedCount = 2
+
+	got := Band(ev, spCfg())
+	if got.NeedsInsight {
+		t.Errorf("spike that spawned follow-up work should not be flagged as dormancy: %+v", got)
+	}
+	found := false
+	for _, d := range got.Drivers {
+		if d == "Spawned 2 follow-up ticket(s)" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a spawned-work driver, got %v", got.Drivers)
+	}
+}
+
+// A wide link graph nudges effort up past the breadth threshold and surfaces a
+// driver.
+func TestBandSpike_BreadthNudge(t *testing.T) {
+	base := spikeEv()
+	base.CycleHours = 6
+	base.ActiveCycleHours = 6
+	narrow := Band(base, spCfg())
+
+	wide := spikeEv()
+	wide.CycleHours = 6
+	wide.ActiveCycleHours = 6
+	wide.LinkBreadth = 8 // well past the default threshold of 3
+	got := Band(wide, spCfg())
+
+	if got.RawEffort <= narrow.RawEffort {
+		t.Errorf("broad link graph should raise raw effort: wide=%v narrow=%v", got.RawEffort, narrow.RawEffort)
+	}
+	found := false
+	for _, d := range got.Drivers {
+		if d == "Linked to 8 related ticket(s)" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a breadth driver, got %v", got.Drivers)
+	}
+}
+
 // A ticket with a PR is never routed to the spike scorer even if it looks like a
 // spike by summary — it has a diff to score normally.
 func TestBand_SpikeRoutingRequiresNoPR(t *testing.T) {

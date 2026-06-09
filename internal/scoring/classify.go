@@ -33,10 +33,11 @@ func isBugType(ev *TicketEvidence) bool {
 	return false
 }
 
-// isSpike reports whether a ticket is a PR-less investigation ticket: an
+// IsSpike reports whether a ticket is a PR-less investigation ticket: an
 // `investigate` label, or "spike" (case-insensitive, word-ish) in the summary.
-// SQL routing is intentionally out of scope for this path.
-func isSpike(ev *TicketEvidence) bool {
+// SQL routing is intentionally out of scope for this path. Exported so the
+// spike-audit calibration tool routes tickets identically to the band engine.
+func IsSpike(ev *TicketEvidence) bool {
 	for _, l := range ev.Labels {
 		ll := strings.ToLower(strings.TrimSpace(l))
 		if ll == "investigate" || ll == "spike" {
@@ -74,6 +75,13 @@ var mdDocRef = regexp.MustCompile(`(?i)\b(?:implementation|discovery)/[\w./-]+\.
 // links, and the count of substantive comments (code fence, URL, or length).
 // Computed for every ticket at extraction (cheap string scans); only the spike
 // scorer consumes them.
+//
+// Attachments are deliberately NOT counted. They are usually reporter-supplied
+// screenshots demonstrating the problem, not investigator-produced artifacts —
+// their count tracks how much the reporter screenshotted, not investigation
+// effort (CD-15865: 26 images of one blank screen). A doc-type, assignee-added
+// attachment would be a real signal, but separating that needs author/timing
+// analysis we don't do here.
 func spikeArtifactSignals(iss *cache.JiraIssue) (links, substantive int) {
 	seen := map[string]struct{}{}
 	collect := func(text string) {
@@ -99,6 +107,53 @@ func spikeArtifactSignals(iss *cache.JiraIssue) (links, substantive int) {
 		}
 	}
 	return len(seen), substantive
+}
+
+// spawnLinkMarkers are substrings of an outward relationship phrase that mark a
+// link as follow-up work this issue produced (a spawned ticket), distinct from a
+// plain relate/block/depend link. Confirmed against the corpus: the only
+// creation-flavored issue link present is the "Defect" type's outward "created"
+// phrase; the clone/split markers are kept for portability to orgs that use them.
+// Subtasks are handled separately (by link type) since they carry no phrase.
+var spawnLinkMarkers = []string{"created", "clone", "split"}
+
+// spikeLinkSignals derives the spike relationship inputs from a ticket's captured
+// links: SpawnedCount counts follow-up work the investigation produced (subtasks
+// plus outward creation-flavored links), and LinkBreadth counts the distinct
+// linked counterparts (how widely the investigation reached). Both are inert on
+// the standard band path; only the spike scorer consumes them.
+func spikeLinkSignals(iss *cache.JiraIssue) (spawned, breadth int) {
+	counterparts := map[string]struct{}{}
+	for _, l := range iss.Links {
+		if l.Key != "" {
+			counterparts[strings.ToUpper(l.Key)] = struct{}{}
+		}
+		if isSpawnLink(l) {
+			spawned++
+		}
+	}
+	return spawned, len(counterparts)
+}
+
+// isSpawnLink reports whether a link represents follow-up work spawned by this
+// issue: a subtask (any direction — captured outward from the parent), or an
+// outward link whose phrase reads as creation ("created", "clones", "split to").
+// Inward creation phrases ("created by", "is cloned from") describe the issue's
+// own origin, not work it spawned, and are excluded by the outward gate.
+func isSpawnLink(l cache.LinkedIssue) bool {
+	if strings.EqualFold(l.LinkType, "subtask") {
+		return true
+	}
+	if !strings.EqualFold(l.Direction, "outward") {
+		return false
+	}
+	p := strings.ToLower(l.Phrase)
+	for _, m := range spawnLinkMarkers {
+		if strings.Contains(p, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // isDocLink reports whether a URL points at a planning/research artifact.

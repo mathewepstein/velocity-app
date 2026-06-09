@@ -32,15 +32,17 @@ type PrintfFunc func(format string, args ...interface{})
 // pull capturing description, changelog, comments, relationships (subtasks +
 // links), attachments, fix versions, and the raw field catch-all, then the
 // derived cycle/rework/pre-code signals. NeedsWork re-hydrates any issue not yet
-// fully captured (never detail-fetched, or no raw fields — e.g. a cell the base
-// pull just rewrote) and every open issue each run (its changelog/comments/
-// fields keep changing); resolved issues are captured once and frozen.
+// fully captured (never detail-fetched, or no raw fields). It does NOT blanket-
+// re-hydrate open issues: the base pull's mergeHydration carries forward the
+// cached record for any issue whose `updated` hasn't advanced, so a stale issue
+// stays fully captured and is skipped here, while a genuinely-changed one (its
+// `updated` advanced → not carried forward → RawFields nil) is re-hydrated.
 func JiraPhase(p *pull.JiraPuller, printf PrintfFunc) backfill.Phase[cache.JiraIssue] {
 	return backfill.Phase[cache.JiraIssue]{
 		Name:   "jira",
 		Source: cache.SourceJira,
 		NeedsWork: func(iss *cache.JiraIssue) bool {
-			return !iss.DetailFetched || iss.RawFields == nil || iss.Resolved == nil
+			return !iss.DetailFetched || iss.RawFields == nil
 		},
 		Fetch: func(ctx context.Context, iss *cache.JiraIssue) (backfill.Outcome, error) {
 			if err := p.HydrateIssue(ctx, iss, time.Now()); err != nil {

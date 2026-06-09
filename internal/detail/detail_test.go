@@ -28,9 +28,12 @@ func TestJiraGate(t *testing.T) {
 		want bool
 	}{
 		{"unfetched", cache.JiraIssue{}, true},
-		{"resolved fully captured once", captured(cache.JiraIssue{Resolved: &now}), false},
-		{"open re-hydrates every run", captured(cache.JiraIssue{}), true},
-		{"detail-fetched but no raw fields (base-pull rewrote)", cache.JiraIssue{DetailFetched: true, Resolved: &now}, true},
+		{"resolved fully captured", captured(cache.JiraIssue{Resolved: &now}), false},
+		// Open + fully captured is now skipped: mergeHydration carries it forward
+		// when `updated` is unchanged, and an `updated` bump drops RawFields →
+		// re-hydrate. No blanket open-issue re-pull.
+		{"open but fully captured", captured(cache.JiraIssue{}), false},
+		{"detail-fetched but no raw fields (base-pull rewrote, updated changed)", cache.JiraIssue{DetailFetched: true, Resolved: &now}, true},
 	}
 	for _, c := range cases {
 		if got := ph.NeedsWork(&c.iss); got != c.want {

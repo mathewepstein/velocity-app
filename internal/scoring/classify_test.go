@@ -43,8 +43,8 @@ func TestIsSpike(t *testing.T) {
 	}
 	for _, c := range cases {
 		ev := &TicketEvidence{Summary: c.summary, IssueType: c.issueType, Labels: c.labels}
-		if got := isSpike(ev); got != c.want {
-			t.Errorf("isSpike(%q) = %v, want %v", c.summary, got, c.want)
+		if got := IsSpike(ev); got != c.want {
+			t.Errorf("IsSpike(%q) = %v, want %v", c.summary, got, c.want)
 		}
 	}
 }
@@ -65,6 +65,46 @@ func TestSpikeArtifactSignals(t *testing.T) {
 	}
 	if substantive != 2 {
 		t.Errorf("substantive = %d, want 2", substantive)
+	}
+}
+
+func TestSpikeLinkSignals(t *testing.T) {
+	iss := &cache.JiraIssue{
+		Links: []cache.LinkedIssue{
+			{Key: "CD-401", LinkType: "subtask", Direction: "outward", Phrase: "subtask"},      // spawned
+			{Key: "CD-402", LinkType: "subtask", Direction: "outward", Phrase: "subtask"},      // spawned
+			{Key: "CD-403", LinkType: "Defect", Direction: "outward", Phrase: "created"},       // spawned (creation, outward)
+			{Key: "CD-404", LinkType: "Defect", Direction: "inward", Phrase: "created by"},     // NOT spawned (inward origin)
+			{Key: "CD-405", LinkType: "A Relate", Direction: "outward", Phrase: "relates to"},  // plain link
+			{Key: "CD-405", LinkType: "A Relate", Direction: "inward", Phrase: "is related to"}, // dup counterpart
+		},
+	}
+	spawned, breadth := spikeLinkSignals(iss)
+	if spawned != 3 {
+		t.Errorf("spawned = %d, want 3", spawned)
+	}
+	// Distinct counterparts: CD-401..405 = 5 (CD-405 appears twice).
+	if breadth != 5 {
+		t.Errorf("breadth = %d, want 5", breadth)
+	}
+}
+
+func TestIsSpawnLink(t *testing.T) {
+	cases := []struct {
+		l    cache.LinkedIssue
+		want bool
+	}{
+		{cache.LinkedIssue{LinkType: "subtask", Direction: "outward"}, true},
+		{cache.LinkedIssue{LinkType: "Defect", Direction: "outward", Phrase: "created"}, true},
+		{cache.LinkedIssue{LinkType: "Cloners", Direction: "outward", Phrase: "clones"}, true},
+		{cache.LinkedIssue{LinkType: "Defect", Direction: "inward", Phrase: "created by"}, false},
+		{cache.LinkedIssue{LinkType: "Blocks", Direction: "outward", Phrase: "blocks"}, false},
+		{cache.LinkedIssue{LinkType: "A Relate", Direction: "outward", Phrase: "relates to"}, false},
+	}
+	for _, c := range cases {
+		if got := isSpawnLink(c.l); got != c.want {
+			t.Errorf("isSpawnLink(%+v) = %v, want %v", c.l, got, c.want)
+		}
 	}
 }
 

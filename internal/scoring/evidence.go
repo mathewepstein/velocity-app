@@ -76,6 +76,12 @@ type TicketEvidence struct {
 	// spike scorer's artifact axis; they are inert on the standard band path.
 	ArtifactLinks       int `json:"artifact_links,omitempty"`
 	SubstantiveComments int `json:"substantive_comments,omitempty"`
+	// Spike relationship signals, derived from the captured issue links at
+	// extraction time. SpawnedCount counts follow-up work the investigation
+	// produced (subtasks + outward creation links); LinkBreadth counts distinct
+	// linked counterparts. Both feed the spike scorer; inert on the standard path.
+	SpawnedCount int `json:"spawned_count,omitempty"`
+	LinkBreadth  int `json:"link_breadth,omitempty"`
 	FirstInProgress *time.Time `json:"first_in_progress,omitempty"`
 	DoneAt          *time.Time `json:"done_at,omitempty"`
 	DetailFetched   bool       `json:"detail_fetched"`
@@ -251,6 +257,7 @@ func (e *Extractor) Extract(ticketKey string) (*TicketEvidence, bool) {
 		DetailFetched:       iss.DetailFetched,
 	}
 	ev.ArtifactLinks, ev.SubstantiveComments = spikeArtifactSignals(iss)
+	ev.SpawnedCount, ev.LinkBreadth = spikeLinkSignals(iss)
 
 	prs := e.prsByKey[ku]
 	reviewers := map[string]struct{}{}

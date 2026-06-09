@@ -203,6 +203,16 @@ type SpikeConfig struct {
 	BaseShortHigh float64 `toml:"base_short_high"` // short cycle, many artifacts (default 3.0)
 	BaseLongLow   float64 `toml:"base_long_low"`   // multi-day, few artifacts (default 3.0)
 	BaseLongHigh  float64 `toml:"base_long_high"`  // multi-day, many artifacts (default 5.0)
+
+	// Relationship nudges (jira-field-capture-plan Phase D). Conservative by
+	// design: spawned follow-up work and a wide link graph corroborate that a
+	// spike did real investigation, but the quadrant base carries the weight.
+	// SpawnedWeight adds per follow-up ticket the spike spawned (subtasks +
+	// creation links); default 0.5. BreadthWeight adds per linked counterpart
+	// beyond BreadthThreshold; default 0.25 above a threshold of 3.
+	SpawnedWeight    float64 `toml:"spawned_weight"`
+	BreadthWeight    float64 `toml:"breadth_weight"`
+	BreadthThreshold int     `toml:"breadth_threshold"`
 }
 
 // RiskConfig holds glob path-lists that elevate touched-area risk by location.
@@ -577,6 +587,9 @@ func DefaultStoryPointsConfig() StoryPointsConfig {
 			BaseShortHigh:      3.0,
 			BaseLongLow:        3.0,
 			BaseLongHigh:       5.0,
+			SpawnedWeight:      0.5,
+			BreadthWeight:      0.25,
+			BreadthThreshold:   3,
 		},
 	}
 }
@@ -1119,6 +1132,15 @@ func (c *Config) applyDefaults() {
 	}
 	if p.StoryPoints.Spike.BaseLongHigh == 0 {
 		p.StoryPoints.Spike.BaseLongHigh = spDef.Spike.BaseLongHigh
+	}
+	if p.StoryPoints.Spike.SpawnedWeight == 0 {
+		p.StoryPoints.Spike.SpawnedWeight = spDef.Spike.SpawnedWeight
+	}
+	if p.StoryPoints.Spike.BreadthWeight == 0 {
+		p.StoryPoints.Spike.BreadthWeight = spDef.Spike.BreadthWeight
+	}
+	if p.StoryPoints.Spike.BreadthThreshold == 0 {
+		p.StoryPoints.Spike.BreadthThreshold = spDef.Spike.BreadthThreshold
 	}
 
 	// Migrate legacy single-login DevIdentity entries to the plural form.

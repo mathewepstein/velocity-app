@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS jira_issues (
     pre_code_comments INTEGER,
     changelog_fetched INTEGER NOT NULL DEFAULT 0,
     comments_fetched  INTEGER NOT NULL DEFAULT 0,
+    relations_fetched  INTEGER NOT NULL DEFAULT 0,
+    raw_fields_fetched INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (scope, month, key)
 );
 CREATE INDEX IF NOT EXISTS idx_jira_cell ON jira_issues (scope, month);
@@ -83,6 +85,30 @@ CREATE TABLE IF NOT EXISTS jira_comments (
     author TEXT, created TEXT NOT NULL, body TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_jira_comments_cell ON jira_comments (scope, month);
+
+CREATE TABLE IF NOT EXISTS jira_issue_links (
+    scope TEXT NOT NULL, month TEXT NOT NULL, issue_key TEXT NOT NULL, ord INTEGER NOT NULL,
+    counterpart_key TEXT NOT NULL, link_type TEXT, direction TEXT, phrase TEXT, status TEXT, issue_type TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jira_issue_links_cell ON jira_issue_links (scope, month);
+
+CREATE TABLE IF NOT EXISTS jira_attachments (
+    scope TEXT NOT NULL, month TEXT NOT NULL, issue_key TEXT NOT NULL, ord INTEGER NOT NULL,
+    filename TEXT NOT NULL, mime_type TEXT, size INTEGER NOT NULL DEFAULT 0, created TEXT, author TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jira_attachments_cell ON jira_attachments (scope, month);
+
+CREATE TABLE IF NOT EXISTS jira_fix_versions (
+    scope TEXT NOT NULL, month TEXT NOT NULL, issue_key TEXT NOT NULL,
+    ord INTEGER NOT NULL, value TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jira_fix_versions_cell ON jira_fix_versions (scope, month);
+
+CREATE TABLE IF NOT EXISTS jira_issue_fields (
+    scope TEXT NOT NULL, month TEXT NOT NULL, issue_key TEXT NOT NULL, ord INTEGER NOT NULL,
+    field_id TEXT NOT NULL, field_name TEXT, value_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jira_issue_fields_cell ON jira_issue_fields (scope, month);
 
 CREATE TABLE IF NOT EXISTS github_prs (
     scope                   TEXT NOT NULL,
@@ -173,7 +199,8 @@ CREATE INDEX IF NOT EXISTS idx_reviews_reviewer ON github_reviews (reviewer);
 // allRecordTables is every table Reset truncates (manifest + records + children),
 // ordered children-then-parents — irrelevant without FKs but kept tidy.
 var allRecordTables = []string{
-	"jira_labels", "jira_components", "jira_changelog", "jira_comments", "jira_issues",
+	"jira_labels", "jira_components", "jira_changelog", "jira_comments",
+	"jira_issue_links", "jira_attachments", "jira_fix_versions", "jira_issue_fields", "jira_issues",
 	"pr_issue_keys", "pr_files", "pr_review_comments", "pr_file_changes", "github_prs",
 	"commit_issue_keys", "github_commits",
 	"github_reviews",

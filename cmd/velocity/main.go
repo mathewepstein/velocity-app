@@ -43,6 +43,7 @@ func rootCmd() *cobra.Command {
 		devsCmd(),
 		cacheCmd(),
 		scoreCmd(),
+		jiraCmd(),
 	)
 	return root
 }

@@ -41,15 +41,24 @@ func (p *JiraPuller) FetchIssueDetail(ctx context.Context, key string) (IssueDet
 	}
 
 	var d IssueDetail
-	if raw.Fields.Description != nil {
-		adf := flattenADF(raw.Fields.Description)
-		d.Description = adf.Text
-		d.DescURLs = adf.URLs
+	if rawDesc, ok := raw.Fields[p.descriptionField()]; ok {
+		var descVal interface{}
+		if err := json.Unmarshal(rawDesc, &descVal); err == nil && descVal != nil {
+			adf := flattenADF(descVal)
+			d.Description = adf.Text
+			d.DescURLs = adf.URLs
+		}
 	}
 
 	// Comments: first page is embedded; page the rest if truncated.
-	d.Comments = decodeComments(raw.Fields.Comment.Comments)
-	cp := raw.Fields.Comment
+	var comment jiraCommentPage
+	if rawCmt, ok := raw.Fields["comment"]; ok {
+		if err := json.Unmarshal(rawCmt, &comment); err != nil {
+			return IssueDetail{}, fmt.Errorf("decode comments %s: %w", key, err)
+		}
+	}
+	d.Comments = decodeComments(comment.Comments)
+	cp := comment
 	for cp.StartAt+len(cp.Comments) < cp.Total {
 		next, err := p.getCommentPage(ctx, esc, cp.StartAt+len(cp.Comments))
 		if err != nil {
@@ -84,9 +93,20 @@ func (p *JiraPuller) FetchIssueDetail(ctx context.Context, key string) (IssueDet
 	return d, nil
 }
 
+// descriptionField is the Jira field the description is read from: the mapped
+// custom field when configured, else the built-in "description". At this org
+// the real content lives in a custom field, so the mapping is load-bearing —
+// the standard field is empty on most issues.
+func (p *JiraPuller) descriptionField() string {
+	if p.descriptionID != "" {
+		return p.descriptionID
+	}
+	return "description"
+}
+
 // getIssueDetail does the base issue call and classifies permanent failures.
 func (p *JiraPuller) getIssueDetail(ctx context.Context, escapedKey string) (jiraDetailRaw, error) {
-	path := fmt.Sprintf("/rest/api/3/issue/%s?expand=changelog&fields=comment,description", escapedKey)
+	path := fmt.Sprintf("/rest/api/3/issue/%s?expand=changelog&fields=comment,%s", escapedKey, p.descriptionField())
 	resp, body, err := p.do(ctx, path)
 	if err != nil {
 		return jiraDetailRaw{}, err
@@ -289,12 +309,12 @@ func (p *JiraPuller) HydrateIssueDetail(ctx context.Context, iss *cache.JiraIssu
 
 // ---------- raw response shapes ----------
 
+// jiraDetailRaw keeps Fields as a keyed map so the description can be read from
+// whichever (possibly custom) field the mapping points at — a fixed struct tag
+// can't express a per-org custom field ID. comment is always the standard key.
 type jiraDetailRaw struct {
-	Fields struct {
-		Description interface{}     `json:"description"`
-		Comment     jiraCommentPage `json:"comment"`
-	} `json:"fields"`
-	Changelog jiraChangelogEmbedded `json:"changelog"`
+	Fields    map[string]json.RawMessage `json:"fields"`
+	Changelog jiraChangelogEmbedded      `json:"changelog"`
 }
 
 type jiraCommentPage struct {

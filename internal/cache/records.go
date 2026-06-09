@@ -56,6 +56,59 @@ type JiraIssue struct {
 	CycleHours      float64    `json:"cycle_hours,omitempty"`
 	StatusFlips     int        `json:"status_flips,omitempty"`
 	PreCodeComments int        `json:"pre_code_comments,omitempty"`
+
+	// --- Relationship + field-capture fields (jira-field-capture-plan Phase B). ---
+	// Links is subtasks + issue links, captured from the base search (free in the
+	// issue page) and the historical field-capture crawl. NO omitempty: the
+	// nil-vs-empty sentinel (carried by relations_fetched) distinguishes an issue
+	// never run through capture (nil) from one with no relationships ([]).
+	// Attachments shares that sentinel. FixVersions is omitempty like Labels /
+	// Components — it round-trips to nil when empty, no sentinel needed.
+	Links       []LinkedIssue `json:"links"`
+	Attachments []Attachment  `json:"attachments"`
+	FixVersions []string      `json:"fix_versions,omitempty"`
+
+	// RawFields is the catch-all: every populated Jira field captured by the
+	// historical `fields=*all` crawl (minus the noise denylist), keyed by field
+	// ID with its JSON value. It is the "never crawl Jira again" store — a future
+	// signal derives from it without a re-pull. NO omitempty: nil=uncaptured (the
+	// crawl hasn't run on this issue), []=captured-but-all-denylisted. Carried by
+	// raw_fields_fetched, which is also the crawl's backfill gate.
+	RawFields []RawField `json:"raw_fields"`
+}
+
+// LinkedIssue is one relationship from an issue: a subtask or an issue link.
+// LinkType is the raw Jira type name ("Blocks", "Cloners", "Split", or
+// "subtask"); Direction is "inward"/"outward"; Phrase is the human relationship
+// text ("is blocked by", "split to") used to classify spawned vs. plain links
+// in scoring. Status/IssueType describe the counterpart when the API returns
+// them.
+type LinkedIssue struct {
+	Key       string `json:"key"`
+	LinkType  string `json:"link_type"`
+	Direction string `json:"direction"`
+	Phrase    string `json:"phrase,omitempty"`
+	Status    string `json:"status,omitempty"`
+	IssueType string `json:"issue_type,omitempty"`
+}
+
+// Attachment is one issue attachment. MimeType + Filename let scoring tell a
+// design doc / screenshot from a log dump (spike artifact density); the bytes
+// are never fetched, only the metadata.
+type Attachment struct {
+	Filename string    `json:"filename"`
+	MimeType string    `json:"mime_type,omitempty"`
+	Size     int       `json:"size,omitempty"`
+	Created  time.Time `json:"created"`
+	Author   string    `json:"author,omitempty"` // accountId
+}
+
+// RawField is one entry in the catch-all: a Jira field's ID, human name, and
+// JSON-encoded value, exactly as the field-capture crawl saw it.
+type RawField struct {
+	ID    string `json:"id"`
+	Name  string `json:"name,omitempty"`
+	Value string `json:"value"` // JSON-encoded raw field value
 }
 
 // StatusTransition is one entry from a Jira issue's changelog: a field change

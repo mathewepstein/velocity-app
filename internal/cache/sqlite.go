@@ -68,7 +68,59 @@ func openSQLiteStore(path string) (Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrateSchema(db); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
 	return &sqliteStore{db: db, path: dbPath}, nil
+}
+
+// migrateSchema brings an already-created DB up to date. The base schema's
+// CREATE TABLE IF NOT EXISTS handles new tables, but cannot add a column to an
+// existing one, and there is no version-migration framework — so this
+// idempotently ALTERs in any column added after a DB was first created (checked
+// against PRAGMA table_info). New columns must be nullable or carry a DEFAULT,
+// since existing rows get the default.
+func migrateSchema(db *sql.DB) error {
+	return addMissingColumns(db, "jira_issues", []columnDef{
+		{"relations_fetched", "INTEGER NOT NULL DEFAULT 0"},
+		{"raw_fields_fetched", "INTEGER NOT NULL DEFAULT 0"},
+	})
+}
+
+type columnDef struct{ name, decl string }
+
+func addMissingColumns(db *sql.DB, table string, cols []columnDef) error {
+	rows, err := db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return err
+	}
+	existing := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid, notnull, pk int
+			name, ctype      string
+			dflt             sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[name] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, c := range cols {
+		if existing[c.name] {
+			continue
+		}
+		if _, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN " + c.name + " " + c.decl); err != nil {
+			return fmt.Errorf("add column %s.%s: %w", table, c.name, err)
+		}
+	}
+	return nil
 }
 
 func (s *sqliteStore) Close() error { return s.db.Close() }

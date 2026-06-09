@@ -429,11 +429,25 @@ type JiraConfig struct {
 	Fields    JiraFields `toml:"fields"`
 }
 
-// JiraFields holds the resolved custom-field IDs for the Jira instance.
-// Discovered during `velocity init` so analyze never has to guess.
+// JiraFields maps canonical signal names to this instance's Jira field IDs —
+// only for signals that BOTH have a consumer in the engine AND can live in a
+// non-standard custom field. Discovered during `velocity init` (story points +
+// epic link) and `velocity jira fields discover` (description), so ingest never
+// has to guess which custom field holds which signal. Every entry is an
+// org-specific field ID and lives only in config — nothing CD-specific ships in
+// the binary.
+//
+// Standard Jira fields (components, labels, parent, fixVersions, …) are NOT
+// mapped here — ingest reads them by their fixed names directly. An empty entry
+// means "not mapped": Description falls back to the built-in `description`
+// field; the others skip. Extra carries arbitrary canonical→field-id mappings
+// the discover wizard surfaces beyond the named ones, so a future signal needs
+// config, not a code change.
 type JiraFields struct {
-	StoryPoints string `toml:"story_points"`
-	EpicLink    string `toml:"epic_link"`
+	StoryPoints string            `toml:"story_points"`
+	EpicLink    string            `toml:"epic_link"`
+	Description string            `toml:"description,omitempty"`
+	Extra       map[string]string `toml:"extra,omitempty"`
 }
 
 type GitHubConfig struct {

@@ -22,6 +22,7 @@ type JiraPuller struct {
 	token          string
 	storyPointsID  string
 	epicLinkID     string
+	descriptionID  string // mapped description field; "" → standard "description"
 	client         *backoffClient
 	pageSize       int
 	sleepBtwnPages time.Duration
@@ -40,6 +41,7 @@ func NewJiraPuller(p config.JiraConfig, token string, pageSize int, sleepBetween
 		token:          token,
 		storyPointsID:  p.Fields.StoryPoints,
 		epicLinkID:     p.Fields.EpicLink,
+		descriptionID:  p.Fields.Description,
 		client:         newBackoffClient(),
 		pageSize:       pageSize,
 		sleepBtwnPages: sleepBetweenPages,
@@ -156,6 +158,10 @@ var jiraBaseFields = []string{
 	"labels",
 	"components",
 	"parent",
+	"issuelinks",
+	"subtasks",
+	"attachment",
+	"fixVersions",
 }
 
 type jiraSearchBody struct {
@@ -242,7 +248,82 @@ func (p *JiraPuller) decodeIssue(r jiraIssueRaw) cache.JiraIssue {
 			}
 		}
 	}
+
+	// Relationships are requested on every base search, so initialize the
+	// sentinel slices to non-nil empty: a freshly-pulled issue is "relations
+	// captured" even when it has none (distinguishes it from a pre-capture
+	// historical issue, which reads back nil).
+	iss.Links = []cache.LinkedIssue{}
+	iss.Attachments = []cache.Attachment{}
+
+	if arr, ok := f["subtasks"].([]interface{}); ok {
+		for _, a := range arr {
+			if m, ok := a.(map[string]interface{}); ok {
+				iss.Links = append(iss.Links, linkedFrom(m, "subtask", "outward", "subtask"))
+			}
+		}
+	}
+	if arr, ok := f["issuelinks"].([]interface{}); ok {
+		for _, a := range arr {
+			m, ok := a.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			typ, _ := m["type"].(map[string]interface{})
+			linkType := stringField(typ, "name")
+			if out, ok := m["outwardIssue"].(map[string]interface{}); ok {
+				iss.Links = append(iss.Links, linkedFrom(out, linkType, "outward", stringField(typ, "outward")))
+			} else if in, ok := m["inwardIssue"].(map[string]interface{}); ok {
+				iss.Links = append(iss.Links, linkedFrom(in, linkType, "inward", stringField(typ, "inward")))
+			}
+		}
+	}
+	if arr, ok := f["attachment"].([]interface{}); ok {
+		for _, a := range arr {
+			if m, ok := a.(map[string]interface{}); ok {
+				att := cache.Attachment{
+					Filename: stringField(m, "filename"),
+					MimeType: stringField(m, "mimeType"),
+					Size:     int(floatField(m, "size")),
+					Created:  parseJiraTime(stringField(m, "created")),
+				}
+				if au, ok := m["author"].(map[string]interface{}); ok {
+					att.Author = stringField(au, "accountId")
+				}
+				iss.Attachments = append(iss.Attachments, att)
+			}
+		}
+	}
+	if arr, ok := f["fixVersions"].([]interface{}); ok {
+		for _, a := range arr {
+			if m, ok := a.(map[string]interface{}); ok {
+				if name := stringField(m, "name"); name != "" {
+					iss.FixVersions = append(iss.FixVersions, name)
+				}
+			}
+		}
+	}
 	return iss
+}
+
+// linkedFrom builds a LinkedIssue from a counterpart issue object (subtask or
+// the inward/outward side of an issue link), reading the counterpart's status
+// and type when the API embedded them.
+func linkedFrom(issue map[string]interface{}, linkType, direction, phrase string) cache.LinkedIssue {
+	l := cache.LinkedIssue{Key: stringField(issue, "key"), LinkType: linkType, Direction: direction, Phrase: phrase}
+	if fl, ok := issue["fields"].(map[string]interface{}); ok {
+		l.Status = nestedName(fl, "status")
+		l.IssueType = nestedName(fl, "issuetype")
+	}
+	return l
+}
+
+// nestedName returns m[key].name when m[key] is an object, else "".
+func nestedName(m map[string]interface{}, key string) string {
+	if sub, ok := m[key].(map[string]interface{}); ok {
+		return stringField(sub, "name")
+	}
+	return ""
 }
 
 func stringField(m map[string]interface{}, key string) string {

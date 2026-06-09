@@ -21,6 +21,61 @@ func openTestSQLite(t *testing.T) *sqliteStore {
 	return s
 }
 
+func columnSet(t *testing.T, s *sqliteStore, table string) map[string]bool {
+	t.Helper()
+	rows, err := s.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		t.Fatalf("table_info(%s): %v", table, err)
+	}
+	defer rows.Close()
+	cols := map[string]bool{}
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt interface{}
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan table_info: %v", err)
+		}
+		cols[name] = true
+	}
+	return cols
+}
+
+func TestMigrateSchema_ColumnsPresentAndIdempotent(t *testing.T) {
+	s := openTestSQLite(t)
+	// migrateSchema already ran in openSQLiteStore; the new columns must exist.
+	cols := columnSet(t, s, "jira_issues")
+	for _, c := range []string{"relations_fetched", "raw_fields_fetched"} {
+		if !cols[c] {
+			t.Errorf("jira_issues missing migrated column %q", c)
+		}
+	}
+	// Re-running must be a no-op (columns already present), not an error.
+	if err := migrateSchema(s.db); err != nil {
+		t.Fatalf("re-run migrateSchema: %v", err)
+	}
+}
+
+func TestAddMissingColumns_AddsAndSkips(t *testing.T) {
+	s := openTestSQLite(t)
+	if _, err := s.db.Exec(`CREATE TABLE scratch (a INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	defs := []columnDef{{"a", "INTEGER"}, {"b", "INTEGER NOT NULL DEFAULT 0"}, {"c", "TEXT"}}
+	if err := addMissingColumns(s.db, "scratch", defs); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	if err := addMissingColumns(s.db, "scratch", defs); err != nil {
+		t.Fatalf("idempotent re-add: %v", err)
+	}
+	cols := columnSet(t, s, "scratch")
+	for _, c := range []string{"a", "b", "c"} {
+		if !cols[c] {
+			t.Errorf("scratch missing column %q after migrate", c)
+		}
+	}
+}
+
 func ut(s string) time.Time {
 	tm, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {
@@ -116,6 +171,55 @@ func TestSQLite_JiraIssueRoundTrip(t *testing.T) {
 	}
 	if got[1].Changelog == nil || len(got[1].Changelog) != 0 {
 		t.Fatalf("fetched-empty issue should have non-nil empty changelog, got %#v", got[1].Changelog)
+	}
+}
+
+func TestSQLite_JiraRelationsAndFieldsRoundTrip(t *testing.T) {
+	s := openTestSQLite(t)
+	m := MustParseMonth("2026-03")
+	issues := []JiraIssue{
+		{ // never run through field capture: Links/Attachments/RawFields nil
+			Key: "CD-10", Summary: "uncaptured",
+			Created: ut("2026-03-01T00:00:00Z"), Updated: ut("2026-03-01T00:00:00Z"),
+		},
+		{ // relations captured but empty (sentinel: non-nil empty); raw fields captured empty
+			Key: "CD-11", Summary: "captured-empty",
+			Created:     ut("2026-03-02T00:00:00Z"), Updated: ut("2026-03-02T00:00:00Z"),
+			Links:       []LinkedIssue{}, Attachments: []Attachment{}, RawFields: []RawField{},
+		},
+		{ // fully populated relationships + fix versions + raw catch-all
+			Key: "CD-12", Summary: "populated",
+			Created: ut("2026-03-03T00:00:00Z"), Updated: ut("2026-03-03T00:00:00Z"),
+			Links: []LinkedIssue{
+				{Key: "CD-99", LinkType: "subtask", Direction: "outward", Phrase: "subtask"},
+				{Key: "CD-88", LinkType: "Cloners", Direction: "outward", Phrase: "split to", Status: "Open", IssueType: "Task"},
+			},
+			Attachments: []Attachment{
+				{Filename: "design.png", MimeType: "image/png", Size: 4096, Created: ut("2026-03-03T01:00:00Z"), Author: "acc1"},
+			},
+			FixVersions: []string{"1.20", "1.21"},
+			RawFields: []RawField{
+				{ID: "customfield_10126", Name: "Flagged", Value: `[{"value":"Impediment"}]`},
+				{ID: "priority", Name: "Priority", Value: `{"name":"High"}`},
+			},
+		},
+	}
+	if err := s.WriteJiraIssues("CD", m, issues); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s.markPulled(t, SourceJira, "CD", m, len(issues))
+	got, err := s.ReadJiraIssues("CD", m)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !reflect.DeepEqual(got, issues) {
+		t.Fatalf("relations round-trip mismatch:\n got=%#v\nwant=%#v", got, issues)
+	}
+	if got[0].Links != nil || got[0].Attachments != nil || got[0].RawFields != nil {
+		t.Fatalf("uncaptured issue should have nil links/attachments/raw, got %#v / %#v / %#v", got[0].Links, got[0].Attachments, got[0].RawFields)
+	}
+	if got[1].Links == nil || len(got[1].Links) != 0 || got[1].RawFields == nil || len(got[1].RawFields) != 0 {
+		t.Fatalf("captured-empty issue should have non-nil empty links/raw, got %#v / %#v", got[1].Links, got[1].RawFields)
 	}
 }
 

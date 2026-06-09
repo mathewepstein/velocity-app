@@ -64,17 +64,33 @@ func TestDomainRiskTier_EmptyConfig(t *testing.T) {
 	}
 }
 
-func TestMatchGlob_SubstringFallback(t *testing.T) {
+func TestMatchGlob_SegmentFallback(t *testing.T) {
 	// A bare directory name (no ** anchoring) should still match a deep path via
-	// the substring-core fallback. (Matcher is shared in analyze.MatchGlob.)
+	// the segment-core fallback. (Matcher is shared in analyze.MatchGlob.)
 	if !analyze.MatchGlob("auth-microservice", "src/main/java/com/x/auth-microservice/Login.java") {
-		t.Error("bare dir name should match deep path via substring fallback")
+		t.Error("bare dir name should match deep path via segment fallback")
 	}
 	if !analyze.MatchGlob("auth-microservice/**", "src/auth-microservice/a/b.go") {
 		t.Error("dir/** should match")
 	}
 	if analyze.MatchGlob("**/billing/**", "src/auth/x.go") {
 		t.Error("non-matching glob should not match")
+	}
+	// The core matches only at segment boundaries, so `credit` matches a real
+	// /credit/ segment but NOT the "smartcredit" product name (the over-match the
+	// segment fix closes).
+	if !analyze.MatchGlob("**/credit/**", "src/main/credit/Report.java") {
+		t.Error("credit should match a real /credit/ segment")
+	}
+	if analyze.MatchGlob("**/credit/**", "_legacy/tenant/Smartcredit/theme/template.txt") {
+		t.Error("credit must NOT match the Smartcredit product name (mid-segment)")
+	}
+	if analyze.MatchGlob("**/credit/**", "src/pages/credit-report/Index.vue") {
+		t.Error("credit must NOT match credit-report (mid-segment)")
+	}
+	// A multi-segment core still matches as a contiguous run.
+	if !analyze.MatchGlob("**/db/changelog/**", "src/main/resources/db/changelog/v1.sql") {
+		t.Error("multi-segment core should match a contiguous run")
 	}
 }
 

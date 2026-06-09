@@ -25,6 +25,69 @@ func autoRec(ticket, hash string, points int) ScoreRecord {
 	}
 }
 
+func TestScoreStore_DateRoundTrip(t *testing.T) {
+	ss := tmpStore(t)
+	created := time.Date(2026, 4, 1, 9, 0, 0, 0, time.UTC)
+	resolved := time.Date(2026, 4, 12, 17, 0, 0, 0, time.UTC)
+	rec := autoRec("CD-1", "h1", 5)
+	rec.CreatedAt = created
+	rec.ResolvedAt = &resolved
+	if _, err := ss.SaveAuto(rec); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := ss.Get("CD-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.CreatedAt.Equal(created) {
+		t.Errorf("created_at = %v, want %v", got.CreatedAt, created)
+	}
+	if got.ResolvedAt == nil || !got.ResolvedAt.Equal(resolved) {
+		t.Errorf("resolved_at = %v, want %v", got.ResolvedAt, resolved)
+	}
+}
+
+func TestScoreStore_OpenTicketHasNoResolvedDate(t *testing.T) {
+	ss := tmpStore(t)
+	rec := autoRec("CD-1", "h1", 5)
+	rec.CreatedAt = time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	rec.ResolvedAt = nil // open ticket
+	if _, err := ss.SaveAuto(rec); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _ := ss.Get("CD-1", "")
+	if got.ResolvedAt != nil {
+		t.Errorf("open ticket should have nil resolved_at, got %v", got.ResolvedAt)
+	}
+	if got.CreatedAt.IsZero() {
+		t.Error("created_at should round-trip for an open ticket")
+	}
+}
+
+func TestScoreStore_RegenBackfillsDatesOnUnchangedEvidence(t *testing.T) {
+	ss := tmpStore(t)
+	// A row scored before the date columns existed: same evidence hash, no dates.
+	if _, err := ss.SaveAuto(autoRec("CD-1", "h1", 5)); err != nil {
+		t.Fatal(err)
+	}
+	// Re-score with identical evidence but now-known dates → skip the re-score,
+	// but patch the dates (Phase 6 backfill).
+	created := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	withDates := autoRec("CD-1", "h1", 5)
+	withDates.CreatedAt = created
+	outcome, err := ss.SaveAuto(withDates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != OutcomeSkipped {
+		t.Errorf("outcome = %q, want skipped (evidence unchanged)", outcome)
+	}
+	got, _, _ := ss.Get("CD-1", "")
+	if !got.CreatedAt.Equal(created) {
+		t.Errorf("dates not backfilled on unchanged-evidence regen: created_at = %v", got.CreatedAt)
+	}
+}
+
 func TestScoreStore_InsertGet(t *testing.T) {
 	ss := tmpStore(t)
 	if _, err := ss.SaveAuto(autoRec("CD-1", "h1", 5)); err != nil {

@@ -1484,6 +1484,49 @@ footer {
   align-items: center;
   gap: 8px;
 }
+.ticket-search {
+  font: inherit;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  padding: 5px 9px;
+  min-width: 150px;
+}
+.ticket-search:focus {
+  outline: none;
+  border-color: rgba(106, 169, 255, 0.55);
+}
+
+/* Jira post preview (dry-run) rendered in the detail panel */
+.post-summary {
+  margin: 0 0 12px;
+}
+.post-card {
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+.post-card-head {
+  padding: 6px 10px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--panel-border);
+}
+.post-comment {
+  margin: 0;
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.post-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
 
 .score-table {
   display: flex;

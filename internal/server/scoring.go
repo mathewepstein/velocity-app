@@ -60,7 +60,7 @@ type generateResult struct {
 // store backs on-demand evidence extraction (per-request LoadAll, same as the
 // other /api/* handlers); scores is the persistent ScoreStore. Either being nil
 // makes the dependent endpoints return 503.
-func registerScoringRoutes(mux *http.ServeMux, profile config.Profile, store cache.Store, scores *scoring.ScoreStore) {
+func registerScoringRoutes(mux *http.ServeMux, profile config.Profile, store cache.Store, scores *scoring.ScoreStore, poster scoring.JiraPoster) {
 	// GET /api/scoring/list?filter=all|needs_insight&limit=N — persisted scores.
 	mux.HandleFunc("GET /api/scoring/list", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -214,6 +214,71 @@ func registerScoringRoutes(mux *http.ServeMux, profile config.Profile, store cac
 			}
 		}
 		writeJSON(w, res)
+	})
+
+	// GET /api/scoring/jira-status — whether live posting is available, so the
+	// frontend can enable/disable the post button (Phase 5 build-order step 2:
+	// verify token write scope before anything live). Never writes.
+	mux.HandleFunc("GET /api/scoring/jira-status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		type status struct {
+			Configured bool   `json:"configured"`
+			CanWrite   bool   `json:"can_write"`
+			Detail     string `json:"detail,omitempty"`
+		}
+		if poster == nil {
+			writeJSON(w, status{Detail: "no jira token configured on the server"})
+			return
+		}
+		if err := poster.VerifyWriteScope(r.Context()); err != nil {
+			writeJSON(w, status{Configured: true, Detail: err.Error()})
+			return
+		}
+		writeJSON(w, status{Configured: true, CanWrite: true})
+	})
+
+	// POST /api/scoring/post — write persisted scores back to Jira. Body:
+	//   {"tickets":["CD-1","CD-2"], "dry_run":true}
+	// dry_run defaults to true (decoded via a pointer), so an omitted or garbled
+	// flag previews rather than writes — a live post requires explicit
+	// "dry_run":false. Per-ticket outcomes (incl. idempotent skips and failures)
+	// come back in the report; the call only errors on a bad request or a store
+	// fault, not on an individual ticket's write failure.
+	mux.HandleFunc("POST /api/scoring/post", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if scores == nil {
+			http.Error(w, "scoring store unavailable (server started without one)", http.StatusServiceUnavailable)
+			return
+		}
+		var body struct {
+			Tickets []string `json:"tickets"`
+			DryRun  *bool    `json:"dry_run"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+			return
+		}
+		if len(body.Tickets) == 0 {
+			http.Error(w, "tickets is required", http.StatusBadRequest)
+			return
+		}
+		dryRun := true
+		if body.DryRun != nil {
+			dryRun = *body.DryRun
+		}
+		if !dryRun && poster == nil {
+			http.Error(w, "live posting unavailable (server has no jira token)", http.StatusServiceUnavailable)
+			return
+		}
+		rep, err := scoring.PostScores(r.Context(), scores, poster, scoring.PostOptions{
+			Tickets: body.Tickets,
+			DryRun:  dryRun,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, rep)
 	})
 }
 

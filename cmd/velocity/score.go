@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
@@ -10,7 +11,9 @@ import (
 	"github.com/mathewepstein/velocity/internal/analyze"
 	"github.com/mathewepstein/velocity/internal/cache"
 	"github.com/mathewepstein/velocity/internal/config"
+	"github.com/mathewepstein/velocity/internal/pull"
 	"github.com/mathewepstein/velocity/internal/scoring"
+	"github.com/mathewepstein/velocity/internal/secrets"
 	"github.com/spf13/cobra"
 )
 
@@ -32,6 +35,7 @@ func scoreCmd() *cobra.Command {
 	cmd.AddCommand(scoreExportCmd())
 	cmd.AddCommand(scoreCalibrateCmd())
 	cmd.AddCommand(scoreRiskDiscoverCmd())
+	cmd.AddCommand(scorePostCmd())
 	return cmd
 }
 
@@ -328,6 +332,119 @@ By default only resolved (post-hoc) tickets are scored, matching the rubric's
 	cmd.Flags().BoolVar(&all, "all", false, "include open (unresolved) tickets")
 	cmd.Flags().IntVar(&limit, "limit", 0, "stop after scoring N tickets (for testing)")
 	return cmd
+}
+
+func scorePostCmd() *cobra.Command {
+	var (
+		tickets   []string
+		confident bool
+		confirm   bool
+		limit     int
+	)
+	cmd := &cobra.Command{
+		Use:   "post",
+		Short: "Write persisted scores back to Jira (story points field + calibration comment)",
+		Long: `Post the deterministic/overridden story points and one calibration comment to
+Jira for the selected tickets. Safe by default: without --confirm this is a
+dry-run that prints the exact comment for each ticket and writes nothing.
+
+Select tickets with --ticket KEY (repeatable) or --confident (every confident,
+unflagged, not-yet-posted ticket that has no existing Jira story points). Posting
+is idempotent — a ticket already marked posted_to_jira is skipped. A live run
+first verifies the token can edit issues + add comments, and aborts if not.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(tickets) == 0 && !confident {
+				return fmt.Errorf("specify --ticket KEY (repeatable) or --confident")
+			}
+			ss, err := scoring.OpenScoreStore(scoreDBPath)
+			if err != nil {
+				return err
+			}
+			defer ss.Close()
+
+			keys := tickets
+			if confident {
+				recs, err := ss.List(scoring.ScoreFilter{})
+				if err != nil {
+					return err
+				}
+				for _, r := range recs {
+					if r.NeedsInsight || r.PostedToJira || r.ExistingStoryPoints != 0 {
+						continue
+					}
+					keys = append(keys, r.Ticket)
+					if limit > 0 && len(keys) >= limit {
+						break
+					}
+				}
+				if len(keys) == 0 {
+					fmt.Fprintln(cmd.OutOrStdout(), "no confident, unflagged, unposted tickets without existing story points")
+					return nil
+				}
+			}
+
+			dryRun := !confirm
+			var poster scoring.JiraPoster
+			if !dryRun {
+				cfg, err := config.Load()
+				if err != nil {
+					return err
+				}
+				tok, err := secrets.Get(config.DefaultProfile, "jira")
+				if err != nil {
+					return fmt.Errorf("fetch jira token (try `velocity auth set jira`): %w", err)
+				}
+				writer := pull.NewJiraWriter(cfg.ActiveProfile().Jira, tok)
+				if err := writer.VerifyWriteScope(cmd.Context()); err != nil {
+					return fmt.Errorf("jira write-scope check failed: %w", err)
+				}
+				poster = writer
+			}
+
+			rep, err := scoring.PostScores(cmd.Context(), ss, poster, scoring.PostOptions{
+				Tickets: keys,
+				DryRun:  dryRun,
+			})
+			if err != nil {
+				return err
+			}
+			printPostReport(cmd.OutOrStdout(), rep)
+			return nil
+		},
+	}
+	cmd.Flags().StringSliceVar(&tickets, "ticket", nil, "post only these ticket keys (repeatable)")
+	cmd.Flags().BoolVar(&confident, "confident", false, "post every confident, unflagged, unposted ticket with no existing Jira story points")
+	cmd.Flags().BoolVar(&confirm, "confirm", false, "perform the live write (without this it is a dry-run preview)")
+	cmd.Flags().IntVar(&limit, "limit", 0, "with --confident, cap the number of tickets selected")
+	return cmd
+}
+
+// printPostReport renders a PostScores report: each dry-run preview shows the
+// full comment; live/skip/error lines are one apiece; a final tally closes it.
+func printPostReport(w io.Writer, rep scoring.PostReport) {
+	for _, r := range rep.Results {
+		switch r.Action {
+		case scoring.ActionPreview:
+			fmt.Fprintf(w, "\n[dry-run] %s → %d points\n", r.Ticket, r.Points)
+			for _, ln := range r.Comment {
+				fmt.Fprintf(w, "    %s\n", ln)
+			}
+		case scoring.ActionPosted:
+			fmt.Fprintf(w, "posted   %s → %d points\n", r.Ticket, r.Points)
+		case scoring.ActionAlreadyPosted:
+			fmt.Fprintf(w, "skipped  %s (already posted)\n", r.Ticket)
+		case scoring.ActionNoRow:
+			fmt.Fprintf(w, "skipped  %s (no persisted score — run `velocity score generate`)\n", r.Ticket)
+		case scoring.ActionError:
+			fmt.Fprintf(w, "ERROR    %s: %s\n", r.Ticket, r.Error)
+		}
+	}
+	mode := "live"
+	if rep.DryRun {
+		mode = "dry-run"
+	}
+	fmt.Fprintf(w, "\n%s: %d posted, %d previewed, %d already-posted, %d no-score, %d errors\n",
+		mode, rep.Posted, rep.Previewed, rep.AlreadyPosted, rep.NoRow, rep.Errors)
 }
 
 func scoreListCmd() *cobra.Command {

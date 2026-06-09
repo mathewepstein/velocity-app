@@ -12,18 +12,35 @@ import (
 // MatchGlob reports whether path matches glob using doublestar semantics (`**`
 // spans path segments). For ergonomics it also matches when the glob's literal
 // directory core (the pattern with leading/trailing `**/`, `/**`, `*` trimmed)
-// appears as a substring of the path, so a bare `auth-microservice` matches a
-// deep path without precise anchoring. Shared by the story-points domain-risk
-// matcher and the noise-path list so both behave identically.
+// appears as a whole path segment (or contiguous run of segments) of the path,
+// so a bare `auth-microservice` matches a deep path without precise anchoring.
+// The core is matched at segment boundaries, NOT as a raw substring: a glob core
+// like `credit` matches `.../credit/...` but NOT `.../smartcredit/...` (the
+// product name). A raw substring fallback previously elevated the entire
+// SmartCredit surface (themes, emails, UI) as credit-domain risk. Shared by the
+// story-points domain-risk matcher and the noise-path list so both behave
+// identically.
 func MatchGlob(glob, path string) bool {
 	path = strings.TrimPrefix(path, "./")
 	if ok, err := doublestar.Match(glob, path); err == nil && ok {
 		return true
 	}
-	if core := globCore(glob); core != "" && strings.Contains(path, core) {
+	if core := globCore(glob); core != "" && containsPathSegment(path, core) {
 		return true
 	}
 	return false
+}
+
+// containsPathSegment reports whether seg appears in p as a whole path segment
+// or contiguous run of segments — bounded by `/` or the string ends on both
+// sides. So seg "credit" matches "a/credit/b", "credit/b", "a/credit", and
+// "credit", but not "smartcredit/b" (mid-segment). seg may itself span segments
+// (e.g. "db/changelog").
+func containsPathSegment(p, seg string) bool {
+	return p == seg ||
+		strings.HasPrefix(p, seg+"/") ||
+		strings.HasSuffix(p, "/"+seg) ||
+		strings.Contains(p, "/"+seg+"/")
 }
 
 // MatchesAnyGlob reports whether path matches any glob in globs.

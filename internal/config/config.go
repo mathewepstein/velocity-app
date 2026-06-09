@@ -666,6 +666,21 @@ func DefaultScoringConfig() ScoringConfig {
 				"*/build/*",
 				"*/vendor/*",
 				"*/node_modules/*",
+				// Sourcemaps (compiled-style/JS output; authored .css/.scss are kept).
+				"*.map",
+				// Handed-off binary assets — fonts, video, lottie animations. They
+				// represent no engineering effort (images are NOT here — optimizing
+				// an image is real FE work). ~0 LOC, so this mostly dampens code_impact
+				// file-count, not the story-points LOC axis.
+				"*.woff", "*.woff2", "*.ttf", "*.otf", "*.eot",
+				"*.mp4", "*.webm", "*.mov", "*.m4v",
+				"*.lottie", "*/lotties/*",
+				// Logs.
+				"*.log",
+				// Mock / fixture JSON — test data, not shipped LOC.
+				"*/__mocks__/*", "*.mock.json",
+				// Agent / git-hook tooling dirs — outright noise.
+				"*/.gemini/*", "*/.claude/*", "*/.husky/*",
 			},
 		},
 		KTiers: []KTier{

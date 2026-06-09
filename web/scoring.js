@@ -30,15 +30,19 @@
       posted:     'any',   // any | yes | no
       sp:         'any',   // any | has | none  (existing Jira story points)
       source:     'any',   // any | auto | human
+      date:       'all',   // all | 3m | 6m | 12m | ytd  (resolved date window)
     },
+    search:       '',            // ticket-key substring filter (lower-cased)
     selected:     null,          // ticket key whose detail is open
     selectedKeys: new Set(),     // tickets checked for a bulk action
+    jira:         { configured: false, can_write: false, detail: '' }, // /api/scoring/jira-status
   };
 
   // filteredRows applies the active facets to the fetched set.
   function filteredRows() {
     const f = state.facets;
     return state.all.filter((r) => {
+      if (state.search && !r.ticket.toLowerCase().includes(state.search)) return false;
       if (f.flag === 'needs' && !r.needs_insight) return false;
       if (f.flag === 'clean' && r.needs_insight) return false;
       if (f.confidence !== 'any' && r.confidence !== f.confidence) return false;
@@ -48,16 +52,64 @@
       if (f.sp === 'has' && !(r.existing_story_points > 0)) return false;
       if (f.sp === 'none' && r.existing_story_points > 0) return false;
       if (f.source !== 'any' && r.source !== f.source) return false;
+      if (f.date !== 'all') {
+        // Filter on the ticket's resolved date, falling back to created for an
+        // open ticket. Undated rows (scored before the date columns existed, or
+        // with neither date) are always shown — never silently filtered out.
+        const raw = r.resolved_at || r.created_at;
+        if (raw) {
+          const d = new Date(raw);
+          if (!isNaN(d.valueOf()) && d < dateCutoff(f.date)) return false;
+        }
+      }
       return true;
     });
   }
 
+  // dateCutoff returns the start of the selected window relative to today's
+  // client clock (a localhost dashboard — day-level drift is irrelevant for
+  // multi-month windows). 'all' is handled by the caller (no cutoff); 'ytd' is
+  // Jan 1 of the current year; the rolling windows subtract whole months.
+  function dateCutoff(win) {
+    const now = new Date();
+    if (win === 'ytd') return new Date(now.getFullYear(), 0, 1);
+    const months = { '3m': 3, '6m': 6, '12m': 12 }[win] || 0;
+    return new Date(now.getFullYear(), now.getMonth() - months, now.getDate());
+  }
+
   async function boot() {
     wireFacetHandlers();
+    wireSearch();
     wireGenerator();
     wireDetailClose();
     wireSelection();
     await loadList();
+    await loadJiraStatus();
+  }
+
+  function wireSearch() {
+    document.getElementById('ticket-search').addEventListener('input', (e) => {
+      state.search = e.target.value.trim().toLowerCase();
+      state.shown = PAGE_SIZE; // reset pagination on a new query
+      // Selection is keyed by ticket and survives filtering (unlike a facet
+      // change), so a search-as-you-type doesn't wipe an in-progress selection.
+      renderTable();
+      renderSummary();
+      renderSelectBar();
+    });
+  }
+
+  // loadJiraStatus checks whether the server can write to Jira so the post
+  // button reflects reality (no token / missing scope → stays disabled with a
+  // reason). Failure is non-fatal — the button just stays disabled.
+  async function loadJiraStatus() {
+    try {
+      const res = await fetch('/api/scoring/jira-status', { cache: 'no-store' });
+      if (res.ok) state.jira = await res.json();
+    } catch (err) {
+      console.error(err);
+    }
+    updatePostButton();
   }
 
   async function loadList() {
@@ -119,7 +171,121 @@
       renderTable();
       renderSelectBar();
     });
-    // #post-selected stays disabled until the Jira write lands (steps 2–4).
+    document.getElementById('post-selected').addEventListener('click', previewPost);
+  }
+
+  // updatePostButton enables Post-to-Jira only when the server can write and at
+  // least one ticket is selected, and surfaces the reason in the tooltip when
+  // it can't.
+  function updatePostButton() {
+    const btn = document.getElementById('post-selected');
+    if (!btn) return;
+    const n = state.selectedKeys.size;
+    const canWrite = state.jira && state.jira.can_write;
+    btn.disabled = !canWrite || n === 0;
+    if (!canWrite) {
+      btn.title = state.jira && state.jira.detail
+        ? `Posting disabled: ${state.jira.detail}`
+        : 'Posting disabled: no Jira token configured on the server.';
+    } else {
+      btn.title = n === 0 ? 'Select tickets to post' : `Post ${n} selected ticket(s) to Jira`;
+    }
+  }
+
+  // ---- Jira write-back (dry-run preview → confirm → live post) ----
+
+  async function postRequest(keys, dryRun) {
+    const res = await fetch('/api/scoring/post', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tickets: keys, dry_run: dryRun }),
+    });
+    if (!res.ok) throw new Error((await res.text()) || res.statusText);
+    return res.json();
+  }
+
+  // previewPost runs a dry-run for the selected tickets and renders the exact
+  // comments that would be posted, with a confirm button. No write happens here.
+  async function previewPost() {
+    const keys = [...state.selectedKeys];
+    if (!keys.length) return;
+    const btn = document.getElementById('post-selected');
+    btn.disabled = true;
+    try {
+      const report = await postRequest(keys, true);
+      showPostPreview(keys, report);
+    } catch (err) {
+      console.error(err);
+      window.alert(`Preview failed: ${err.message}`);
+    } finally {
+      updatePostButton();
+    }
+  }
+
+  function showPostPreview(keys, report) {
+    const panel = document.getElementById('detail-panel');
+    const body = document.getElementById('detail-body');
+    document.getElementById('detail-key').textContent = 'post preview';
+    panel.hidden = false;
+    document.getElementById('score-layout').classList.add('split');
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    const willPost = report.results.filter((r) => r.action === 'preview');
+    const skipped = report.results.filter((r) => r.action !== 'preview');
+
+    const parts = [];
+    parts.push(
+      `<p class="post-summary"><strong>${willPost.length}</strong> ticket(s) will be written to Jira` +
+        (skipped.length ? ` · ${skipped.length} skipped (already posted / no score)` : '') + '.</p>',
+    );
+    willPost.forEach((r) => {
+      parts.push(
+        `<div class="post-card"><div class="post-card-head">${escapeHTML(r.ticket)} → ${r.points} pts</div>` +
+          `<pre class="post-comment">${escapeHTML((r.comment || []).join('\n'))}</pre></div>`,
+      );
+    });
+    if (!willPost.length) {
+      parts.push('<p class="score-empty">Nothing to post — all selected tickets are already posted or have no score.</p>');
+    }
+    parts.push(
+      '<div class="post-actions">' +
+        (willPost.length ? '<button type="button" class="run-btn" id="confirm-post">Confirm — post to Jira</button>' : '') +
+        '<button type="button" class="copy-btn" id="cancel-post">Cancel</button></div>',
+    );
+    parts.push('<div class="meta" id="post-result"></div>');
+    body.innerHTML = parts.join('');
+
+    const cancel = document.getElementById('cancel-post');
+    if (cancel) cancel.addEventListener('click', closeDetail);
+    const confirm = document.getElementById('confirm-post');
+    if (confirm) confirm.addEventListener('click', () => livePost(keys));
+  }
+
+  // livePost performs the real write (dry_run:false). The server is idempotent
+  // and skips already-posted rows, so re-posting the same selection is safe.
+  async function livePost(keys) {
+    const confirm = document.getElementById('confirm-post');
+    const result = document.getElementById('post-result');
+    if (confirm) confirm.disabled = true;
+    if (result) result.textContent = 'Posting…';
+    try {
+      const report = await postRequest(keys, false);
+      if (result) {
+        result.textContent =
+          `${report.posted} posted · ${report.already_posted} already · ` +
+          `${report.no_score} no-score · ${report.errors} error(s).`;
+      }
+      const errs = report.results.filter((r) => r.action === 'error');
+      if (errs.length) console.error('post errors', errs);
+      state.selectedKeys.clear();
+      await loadList();       // refresh posted_to_jira state on the rows
+      renderSelectBar();
+    } catch (err) {
+      console.error(err);
+      if (result) result.textContent = `Failed: ${err.message}`;
+    } finally {
+      if (confirm) confirm.disabled = false;
+    }
   }
 
   function toggleSelect(key, checked, rowEl) {
@@ -146,6 +312,7 @@
     bar.hidden = n === 0;
     document.getElementById('select-count').textContent = `${n} selected`;
     syncSelectAllState();
+    updatePostButton();
   }
 
   function wireGenerator() {

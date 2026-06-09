@@ -6,7 +6,9 @@ import (
 
 	"github.com/mathewepstein/velocity/internal/cache"
 	"github.com/mathewepstein/velocity/internal/config"
+	"github.com/mathewepstein/velocity/internal/pull"
 	"github.com/mathewepstein/velocity/internal/scoring"
+	"github.com/mathewepstein/velocity/internal/secrets"
 	"github.com/mathewepstein/velocity/internal/server"
 	"github.com/spf13/cobra"
 )
@@ -41,6 +43,14 @@ func serveCmd() *cobra.Command {
 			}
 			defer scoreStore.Close()
 			warnIfNoRoster(cmd.OutOrStdout(), profile)
+			// Build the Jira write-back poster only when a token is in the
+			// keychain. Absent token → nil poster: the dashboard still serves and
+			// dry-run previews work; only live posting (/api/scoring/post with
+			// dry_run:false) is unavailable, and jira-status reports why.
+			var poster scoring.JiraPoster
+			if tok, err := secrets.Get(config.DefaultProfile, "jira"); err == nil && tok != "" {
+				poster = pull.NewJiraWriter(profile.Jira, tok)
+			}
 			return server.Serve(ctx, server.Options{
 				Port:       port,
 				Open:       open,
@@ -50,6 +60,7 @@ func serveCmd() *cobra.Command {
 				Profile:    profile,
 				Store:      store,
 				ScoreStore: scoreStore,
+				Poster:     poster,
 			})
 		},
 	}

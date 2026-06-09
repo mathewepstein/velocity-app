@@ -29,6 +29,10 @@
         <h2>Banded tickets <span class="meta" id="score-meta"></span></h2>
         <div class="score-filters" id="score-filters">
           <div class="facet">
+            <span class="control-label">Ticket</span>
+            <input type="search" id="ticket-search" class="ticket-search" placeholder="e.g. CD-12345" autocomplete="off" aria-label="Filter by ticket key" />
+          </div>
+          <div class="facet">
             <span class="control-label">Flag</span>
             <div class="control-group" data-facet="flag">
               <button data-val="any">Any</button>
@@ -81,6 +85,16 @@
               <button data-val="human">Override</button>
             </div>
           </div>
+          <div class="facet">
+            <span class="control-label">Resolved</span>
+            <div class="control-group" data-facet="date">
+              <button data-val="all" class="active">All</button>
+              <button data-val="3m">3M</button>
+              <button data-val="6m">6M</button>
+              <button data-val="12m">12M</button>
+              <button data-val="ytd">YTD</button>
+            </div>
+          </div>
         </div>
 
         <div class="score-table" role="table" aria-label="Scored tickets">
@@ -104,8 +118,7 @@
           <button type="button" class="copy-btn" id="clear-selection">Clear</button>
           <span class="spacer"></span>
           <button type="button" class="run-btn" id="post-selected" disabled
-            title="Jira write-back is enabled after the token write-scope check (Phase 5 steps 2–4).">Post
-            to Jira</button>
+            title="Checking Jira write access…">Post to Jira</button>
         </div>
       </section>
 

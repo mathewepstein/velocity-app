@@ -36,6 +36,13 @@ type ScoreRecord struct {
 	Source              string  `json:"source"` // auto | human
 	AutoPoints          int     `json:"auto_points"`
 	ExistingStoryPoints float64 `json:"existing_story_points"` // SP already on the Jira ticket (0 = unset)
+	// CreatedAt/ResolvedAt are the ticket's Jira dates, captured at score time
+	// so the SP page can filter by a date window client-side (Phase 6). Immutable
+	// facts about the ticket, so freezing them at score time is correct. ResolvedAt
+	// is nil for an open (unresolved) ticket; CreatedAt is zero only on rows scored
+	// before the columns existed (treated as "undated" — never filtered out).
+	CreatedAt     time.Time  `json:"created_at,omitempty"`
+	ResolvedAt    *time.Time `json:"resolved_at,omitempty"`
 	Band          string     `json:"band"`
 	Confidence    string     `json:"confidence"`
 	NeedsInsight  bool       `json:"needs_insight"`
@@ -53,21 +60,23 @@ type ScoreRecord struct {
 // its deterministic band, stamping scored_at and the evidence hash.
 func NewAutoRecord(ev *TicketEvidence, b BandResult, at time.Time) ScoreRecord {
 	return ScoreRecord{
-		Ticket:        ev.Key,
-		Scorer:        ScorerID,
+		Ticket:              ev.Key,
+		Scorer:              ScorerID,
 		Points:              b.Points,
 		Source:              SourceAuto,
 		AutoPoints:          b.Points,
 		ExistingStoryPoints: ev.ExistingStoryPoints,
+		CreatedAt:           ev.Created,
+		ResolvedAt:          ev.Resolved,
 		Band:                b.Band,
-		Confidence:    b.Confidence,
-		NeedsInsight:  b.NeedsInsight,
-		QuadrantCell:  b.QuadrantCell,
-		Drivers:       b.Drivers,
-		SignalSummary: b.SignalSummary,
-		HardestAspect: b.HardestAspectHint,
-		EvidenceHash:  EvidenceHash(ev),
-		ScoredAt:      at,
+		Confidence:          b.Confidence,
+		NeedsInsight:        b.NeedsInsight,
+		QuadrantCell:        b.QuadrantCell,
+		Drivers:             b.Drivers,
+		SignalSummary:       b.SignalSummary,
+		HardestAspect:       b.HardestAspectHint,
+		EvidenceHash:        EvidenceHash(ev),
+		ScoredAt:            at,
 	}
 }
 
@@ -96,6 +105,8 @@ CREATE TABLE IF NOT EXISTS scores (
 	source          TEXT    NOT NULL,
 	auto_points     INTEGER NOT NULL,
 	existing_story_points REAL NOT NULL DEFAULT 0,
+	created_at      TEXT,
+	resolved_at     TEXT,
 	band            TEXT,
 	confidence      TEXT,
 	needs_insight   INTEGER NOT NULL DEFAULT 0,
@@ -132,7 +143,57 @@ func OpenScoreStore(path string) (*ScoreStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply scores schema: %w", err)
 	}
+	// Forward-migrate a pre-existing scores table to the current column set
+	// (CREATE … IF NOT EXISTS leaves an old table's columns untouched). The
+	// scores table is a derived artifact, but rows survive across `score
+	// generate` runs, so additive columns need an ALTER for older DBs.
+	if err := ensureScoreColumns(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &ScoreStore{db: db, path: dbPath}, nil
+}
+
+// ensureScoreColumns adds any columns missing from an older scores table. It is
+// idempotent: it reads the live column set via PRAGMA and only ALTERs what is
+// absent, so fresh DBs (which already have every column from scoreSchema) are
+// a no-op.
+func ensureScoreColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(scores)`)
+	if err != nil {
+		return fmt.Errorf("inspect scores columns: %w", err)
+	}
+	have := map[string]bool{}
+	for rows.Next() {
+		var (
+			cid, notnull, pk int
+			name, ctype      string
+			dflt             sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan scores column: %w", err)
+		}
+		have[name] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	// canonical → DDL for the additive (nullable) columns.
+	additive := []struct{ name, ddl string }{
+		{"created_at", `ALTER TABLE scores ADD COLUMN created_at TEXT`},
+		{"resolved_at", `ALTER TABLE scores ADD COLUMN resolved_at TEXT`},
+	}
+	for _, c := range additive {
+		if have[c.name] {
+			continue
+		}
+		if _, err := db.Exec(c.ddl); err != nil {
+			return fmt.Errorf("add scores column %s: %w", c.name, err)
+		}
+	}
+	return nil
 }
 
 func (s *ScoreStore) Close() error { return s.db.Close() }
@@ -142,9 +203,9 @@ type SaveOutcome string
 
 const (
 	OutcomeInserted  SaveOutcome = "inserted"  // new auto row
-	OutcomeUpdated   SaveOutcome = "updated"    // existing auto row, evidence changed
-	OutcomeSkipped   SaveOutcome = "skipped"    // existing auto row, evidence unchanged (idempotent)
-	OutcomePreserved SaveOutcome = "preserved"  // existing human override kept; auto columns refreshed
+	OutcomeUpdated   SaveOutcome = "updated"   // existing auto row, evidence changed
+	OutcomeSkipped   SaveOutcome = "skipped"   // existing auto row, evidence unchanged (idempotent)
+	OutcomePreserved SaveOutcome = "preserved" // existing human override kept; auto columns refreshed
 )
 
 // SaveAuto upserts the deterministic band for a ticket while never discarding a
@@ -184,6 +245,15 @@ func (s *ScoreStore) SaveAuto(rec ScoreRecord) (SaveOutcome, error) {
 		}
 		return OutcomePreserved, nil
 	case existing.EvidenceHash == rec.EvidenceHash && rec.EvidenceHash != "":
+		// Evidence unchanged → skip the re-score, but patch the ticket dates if
+		// the row predates the created_at/resolved_at columns (Phase 6). Dates
+		// are immutable facts independent of the evidence hash, so this lets a
+		// plain `score generate` backfill them without a forced re-score.
+		if existing.CreatedAt.IsZero() && !rec.CreatedAt.IsZero() {
+			if err := s.patchDates(rec.Ticket, rec.Scorer, rec.CreatedAt, rec.ResolvedAt); err != nil {
+				return "", err
+			}
+		}
 		return OutcomeSkipped, nil
 	default:
 		// Preserve any prior posted state on the auto row across recompute.
@@ -213,6 +283,16 @@ func (s *ScoreStore) SetHumanOverride(ticket, scorer string, points, autoPoints 
 	existing.Source = SourceHuman
 	existing.ScoredAt = at
 	return s.upsert(*existing)
+}
+
+// patchDates updates only the ticket-date columns on an existing row, leaving
+// the score + posted state untouched. Used to backfill dates onto rows scored
+// before the Phase-6 columns existed.
+func (s *ScoreStore) patchDates(ticket, scorer string, created time.Time, resolved *time.Time) error {
+	_, err := s.db.Exec(
+		`UPDATE scores SET created_at=?, resolved_at=? WHERE ticket=? AND scorer=?`,
+		fmtZeroableTime(created), fmtTimePtr(resolved), ticket, scorer)
+	return err
 }
 
 // MarkPosted records that the ticket's score was written to Jira.
@@ -276,6 +356,7 @@ func (s *ScoreStore) List(f ScoreFilter) ([]ScoreRecord, error) {
 }
 
 const selectCols = `SELECT ticket, scorer, points, source, auto_points, existing_story_points,
+	created_at, resolved_at,
 	band, confidence, needs_insight, quadrant_cell, drivers, signal_summary, hardest_aspect,
 	evidence_hash, scored_at, posted_to_jira, jira_posted_at FROM scores`
 
@@ -283,18 +364,21 @@ func (s *ScoreStore) upsert(rec ScoreRecord) error {
 	drivers, _ := json.Marshal(rec.Drivers)
 	_, err := s.db.Exec(`
 INSERT INTO scores (ticket, scorer, points, source, auto_points, existing_story_points,
+	created_at, resolved_at,
 	band, confidence, needs_insight, quadrant_cell, drivers, signal_summary, hardest_aspect,
 	evidence_hash, scored_at, posted_to_jira, jira_posted_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(ticket, scorer) DO UPDATE SET
 	points=excluded.points, source=excluded.source, auto_points=excluded.auto_points,
 	existing_story_points=excluded.existing_story_points,
+	created_at=excluded.created_at, resolved_at=excluded.resolved_at,
 	band=excluded.band, confidence=excluded.confidence, needs_insight=excluded.needs_insight,
 	quadrant_cell=excluded.quadrant_cell, drivers=excluded.drivers,
 	signal_summary=excluded.signal_summary, hardest_aspect=excluded.hardest_aspect,
 	evidence_hash=excluded.evidence_hash, scored_at=excluded.scored_at,
 	posted_to_jira=excluded.posted_to_jira, jira_posted_at=excluded.jira_posted_at`,
 		rec.Ticket, rec.Scorer, rec.Points, rec.Source, rec.AutoPoints, rec.ExistingStoryPoints,
+		fmtZeroableTime(rec.CreatedAt), fmtTimePtr(rec.ResolvedAt),
 		rec.Band, rec.Confidence,
 		boolToInt(rec.NeedsInsight), rec.QuadrantCell, string(drivers), rec.SignalSummary, rec.HardestAspect,
 		rec.EvidenceHash, fmtTime(rec.ScoredAt), boolToInt(rec.PostedToJira), fmtTimePtr(rec.JiraPostedAt))
@@ -308,16 +392,19 @@ type scanner interface {
 
 func scanScore(sc scanner) (*ScoreRecord, error) {
 	var (
-		rec      ScoreRecord
-		needs    int
-		posted   int
-		drivers  sql.NullString
-		scoredAt string
-		postedAt sql.NullString
+		rec        ScoreRecord
+		needs      int
+		posted     int
+		drivers    sql.NullString
+		createdAt  sql.NullString
+		resolvedAt sql.NullString
+		scoredAt   string
+		postedAt   sql.NullString
 	)
 	err := sc.Scan(&rec.Ticket, &rec.Scorer, &rec.Points, &rec.Source, &rec.AutoPoints,
-		&rec.ExistingStoryPoints, &rec.Band, &rec.Confidence, &needs, &rec.QuadrantCell, &drivers,
-		&rec.SignalSummary, &rec.HardestAspect, &rec.EvidenceHash, &scoredAt, &posted, &postedAt)
+		&rec.ExistingStoryPoints, &createdAt, &resolvedAt, &rec.Band, &rec.Confidence, &needs,
+		&rec.QuadrantCell, &drivers, &rec.SignalSummary, &rec.HardestAspect, &rec.EvidenceHash,
+		&scoredAt, &posted, &postedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -325,6 +412,16 @@ func scanScore(sc scanner) (*ScoreRecord, error) {
 	rec.PostedToJira = posted != 0
 	if drivers.Valid && drivers.String != "" {
 		_ = json.Unmarshal([]byte(drivers.String), &rec.Drivers)
+	}
+	if createdAt.Valid {
+		if t, err := parseTime(createdAt.String); err == nil {
+			rec.CreatedAt = t
+		}
+	}
+	if resolvedAt.Valid {
+		if t, err := parseTime(resolvedAt.String); err == nil {
+			rec.ResolvedAt = &t
+		}
 	}
 	if t, err := parseTime(scoredAt); err == nil {
 		rec.ScoredAt = t
@@ -344,6 +441,16 @@ func fmtTime(t time.Time) string { return t.Format(time.RFC3339Nano) }
 
 func fmtTimePtr(t *time.Time) any {
 	if t == nil {
+		return nil
+	}
+	return t.Format(time.RFC3339Nano)
+}
+
+// fmtZeroableTime stores a NULL for the zero time (an unset/unknown date) and
+// the RFC3339Nano text otherwise — so a row scored before a date was known
+// round-trips back to the zero value rather than a bogus 0001-01-01 string.
+func fmtZeroableTime(t time.Time) any {
+	if t.IsZero() {
 		return nil
 	}
 	return t.Format(time.RFC3339Nano)

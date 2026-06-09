@@ -173,6 +173,42 @@ func TestScoringPost_LiveWithoutPoster503(t *testing.T) {
 	}
 }
 
+func TestScoringOverride_SetsHumanPoints(t *testing.T) {
+	store := seededScoreStore(t) // CD-1 auto, points=2
+	h := handlerWith(t, store)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, loopbackRequest(http.MethodPost, "/api/scoring/override", strings.NewReader(`{"ticket":"CD-1","points":8}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var row scoring.ScoreRecord
+	json.Unmarshal(rec.Body.Bytes(), &row)
+	if row.Points != 8 || row.Source != scoring.SourceHuman {
+		t.Errorf("override not applied: %+v", row)
+	}
+	if row.AutoPoints != 2 {
+		t.Errorf("auto band should be preserved, got %d", row.AutoPoints)
+	}
+}
+
+func TestScoringOverride_404ForUnknownTicket(t *testing.T) {
+	h := handlerWith(t, seededScoreStore(t))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, loopbackRequest(http.MethodPost, "/api/scoring/override", strings.NewReader(`{"ticket":"CD-999","points":3}`)))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestScoringOverride_400WithoutPoints(t *testing.T) {
+	h := handlerWith(t, seededScoreStore(t))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, loopbackRequest(http.MethodPost, "/api/scoring/override", strings.NewReader(`{"ticket":"CD-1"}`)))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
 func TestScoringJiraStatus_NotConfigured(t *testing.T) {
 	h := handlerWith(t, seededScoreStore(t)) // no poster
 	rec := httptest.NewRecorder()

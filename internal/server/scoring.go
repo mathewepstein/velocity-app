@@ -280,6 +280,49 @@ func registerScoringRoutes(mux *http.ServeMux, profile config.Profile, store cac
 		}
 		writeJSON(w, rep)
 	})
+
+	// POST /api/scoring/override — record a human's final points for a ticket
+	// (the per-ticket "Approve & post" path's first step). Treats the value as
+	// ground truth (Source=human) while preserving the deterministic band
+	// columns for calibration; does NOT post to Jira (the caller posts after).
+	mux.HandleFunc("POST /api/scoring/override", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if scores == nil {
+			http.Error(w, "scoring store unavailable (server started without one)", http.StatusServiceUnavailable)
+			return
+		}
+		var body struct {
+			Ticket string `json:"ticket"`
+			Points *int   `json:"points"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
+			return
+		}
+		if body.Ticket == "" || body.Points == nil {
+			http.Error(w, "ticket and points are required", http.StatusBadRequest)
+			return
+		}
+		if *body.Points < 0 {
+			http.Error(w, "points must be a non-negative integer", http.StatusBadRequest)
+			return
+		}
+		existing, ok, err := scores.Get(body.Ticket, "")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.Error(w, fmt.Sprintf("no score row for %s — run the generator first", body.Ticket), http.StatusNotFound)
+			return
+		}
+		if err := scores.SetHumanOverride(body.Ticket, "", *body.Points, existing.AutoPoints, time.Now()); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		rec, _, _ := scores.Get(body.Ticket, "")
+		writeJSON(w, rec)
+	})
 }
 
 // writeJSON encodes v as the response body, setting the content type. A trailing

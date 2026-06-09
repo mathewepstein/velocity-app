@@ -5,8 +5,9 @@
    from /api/scoring/ticket/{key}. The "Run generator" button re-bands the
    post-hoc corpus via /api/scoring/generate.
 
-   Jira write-back (approve & post) is Phase 5 — the override input is laid out
-   here but its post path is wired in the next phase. */
+   Jira write-back (Phase 5): both the bulk select-bar and the per-ticket
+   "Approve & post" override block post via /api/scoring/post (dry-run preview →
+   confirm → live), gated on /api/scoring/jira-status. */
 
 (() => {
   'use strict';
@@ -600,11 +601,51 @@
     postBtn.type = 'button';
     postBtn.className = 'run-btn';
     postBtn.textContent = 'Approve & post to Jira';
-    postBtn.disabled = true;
-    postBtn.title = 'Jira write-back lands in Phase 5.';
     const note = document.createElement('span');
     note.className = 'run-status';
-    note.textContent = 'Posting to Jira is wired in Phase 5.';
+
+    const canWrite = state.jira && state.jira.can_write;
+    postBtn.disabled = !canWrite;
+    if (!canWrite) {
+      const why = state.jira && state.jira.detail
+        ? state.jira.detail
+        : 'no Jira token configured on the server';
+      postBtn.title = `Posting disabled: ${why}`;
+      note.textContent = `Posting unavailable — ${why}.`;
+    } else {
+      postBtn.title = 'Persist any override, preview the comment, then post to Jira';
+    }
+
+    postBtn.addEventListener('click', async () => {
+      const pts = parseInt(input.value, 10);
+      if (Number.isNaN(pts) || pts < 0) {
+        note.textContent = 'Enter a non-negative integer.';
+        return;
+      }
+      postBtn.disabled = true;
+      note.textContent = pts !== band.points ? 'Saving override…' : 'Preparing preview…';
+      try {
+        // Persist the human override first (ground truth) when the value
+        // differs from the deterministic band; the dry-run then reflects it.
+        if (pts !== band.points) {
+          const r = await fetch('/api/scoring/override', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticket: key, points: pts }),
+          });
+          if (!r.ok) throw new Error((await r.text()) || r.statusText);
+        }
+        // Dry-run → render the comment with a Confirm button (shared with the
+        // bulk flow), scoped to this one ticket.
+        const report = await postRequest([key], true);
+        showPostPreview([key], report);
+      } catch (err) {
+        console.error(err);
+        note.textContent = `Failed: ${err.message}`;
+        postBtn.disabled = false;
+      }
+    });
+
     row.append(input, postBtn, note);
     wrap.append(label, row);
     return wrap;

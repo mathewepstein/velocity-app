@@ -1,6 +1,7 @@
 package scoring
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,26 @@ func TestSpikeArtifactSignals(t *testing.T) {
 	}
 	if substantive != 2 {
 		t.Errorf("substantive = %d, want 2", substantive)
+	}
+}
+
+func TestIsSubstantiveComment(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"code fence", "```go\nx()\n```", true},
+		{"doc link", "see https://consumerdirect.atlassian.net/wiki/x for details", true},
+		{"google doc link", "notes: https://docs.google.com/document/d/abc", true},
+		{"long prose", strings.Repeat("a ", 120), true}, // >= 200 chars
+		{"bare jira ticket link", "here is the follow up ticket: https://consumerdirect.atlassian.net/browse/CD-99999", false},
+		{"short chatter", "Mee will speak to Rachelle more about this", false},
+	}
+	for _, c := range cases {
+		if got := isSubstantiveComment(c.body); got != c.want {
+			t.Errorf("%s: isSubstantiveComment = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

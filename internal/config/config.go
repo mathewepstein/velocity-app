@@ -198,6 +198,15 @@ type SpikeConfig struct {
 	// at extraction time onto TicketEvidence.
 	ArtifactThreshold int `toml:"artifact_threshold"`
 
+	// SubstantiveCommentCap bounds how many substantive comments feed the artifact
+	// axis (diminishing returns by hard cap). A spike's depth concentrates in a
+	// few deep comments; sheer comment volume is mostly back-and-forth chatter, so
+	// counting it linearly over-bands talkative tickets (CD-15865: 1 root-cause
+	// comment + 8 coordination/symptom comments was scoring as 9 units of depth).
+	// Doc-links are NOT capped — a planning doc is stronger evidence than a
+	// comment. Default 3; 0 disables the cap.
+	SubstantiveCommentCap int `toml:"substantive_comment_cap"`
+
 	// Quadrant base efforts for the cycle × density cells (continuous, pre-nudge).
 	BaseShortLow  float64 `toml:"base_short_low"`  // short cycle, few artifacts (default 1.5)
 	BaseShortHigh float64 `toml:"base_short_high"` // short cycle, many artifacts (default 3.0)
@@ -581,15 +590,16 @@ func DefaultStoryPointsConfig() StoryPointsConfig {
 		// weighting in the binary. Spike ships working defaults so a routed spike
 		// scores without requiring config.
 		Spike: SpikeConfig{
-			CycleDaysThreshold: 2,
-			ArtifactThreshold:  2,
-			BaseShortLow:       1.5,
-			BaseShortHigh:      3.0,
-			BaseLongLow:        3.0,
-			BaseLongHigh:       5.0,
-			SpawnedWeight:      0.5,
-			BreadthWeight:      0.25,
-			BreadthThreshold:   3,
+			CycleDaysThreshold:    2,
+			ArtifactThreshold:     2,
+			SubstantiveCommentCap: 3,
+			BaseShortLow:          1.5,
+			BaseShortHigh:         3.0,
+			BaseLongLow:           3.0,
+			BaseLongHigh:          5.0,
+			SpawnedWeight:         0.5,
+			BreadthWeight:         0.25,
+			BreadthThreshold:      3,
 		},
 	}
 }
@@ -1120,6 +1130,9 @@ func (c *Config) applyDefaults() {
 	}
 	if p.StoryPoints.Spike.ArtifactThreshold == 0 {
 		p.StoryPoints.Spike.ArtifactThreshold = spDef.Spike.ArtifactThreshold
+	}
+	if p.StoryPoints.Spike.SubstantiveCommentCap == 0 {
+		p.StoryPoints.Spike.SubstantiveCommentCap = spDef.Spike.SubstantiveCommentCap
 	}
 	if p.StoryPoints.Spike.BaseShortLow == 0 {
 		p.StoryPoints.Spike.BaseShortLow = spDef.Spike.BaseShortLow

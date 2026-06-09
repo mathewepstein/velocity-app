@@ -118,6 +118,33 @@ func TestBandSpike_BreadthNudge(t *testing.T) {
 	}
 }
 
+// Substantive comments feed the artifact axis with diminishing returns: a
+// talkative spike (many comments) must not out-band one with a handful, because
+// the cap bounds the comment contribution. Mirrors the CD-15865 over-band fix.
+func TestBandSpike_SubstantiveCommentCap(t *testing.T) {
+	mk := func(comments int) *TicketEvidence {
+		ev := spikeEv()
+		ev.CycleHours = 120 // multi-day
+		ev.ActiveCycleHours = 120
+		ev.ArtifactLinks = 0
+		ev.SubstantiveComments = comments
+		ev.StatusFlips = 2
+		return ev
+	}
+	cfg := spCfg() // default cap = 3
+
+	chatty := Band(mk(12), cfg)
+	capped := Band(mk(3), cfg) // already at the cap
+	if chatty.Points != capped.Points {
+		t.Errorf("comment count past the cap should not raise the band: 12-comment=%d 3-comment=%d", chatty.Points, capped.Points)
+	}
+	// And the cap actually bites: 12 uncapped comments would push raw to
+	// 5.0 + (12-2)*0.5 = 10 (→ 13); capped at 3 it is 5.0 + (3-2)*0.5 = 5.5 (→ 5).
+	if chatty.Points > 5 {
+		t.Errorf("capped 12-comment spike points = %d, want <= 5 (raw=%v)", chatty.Points, chatty.RawEffort)
+	}
+}
+
 // A ticket with a PR is never routed to the spike scorer even if it looks like a
 // spike by summary — it has a diff to score normally.
 func TestBand_SpikeRoutingRequiresNoPR(t *testing.T) {

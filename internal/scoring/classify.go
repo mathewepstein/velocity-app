@@ -167,14 +167,20 @@ func isDocLink(u string) bool {
 	return false
 }
 
-// isSubstantiveComment reports whether a comment body carries real content: a
-// code fence, an inline/bare URL, or a body at/above the length floor.
+// isSubstantiveComment reports whether a comment body carries real investigation
+// content: a code fence, a planning/research doc link, or a body at/above the
+// length floor. Only doc-links count — a bare Jira-ticket link is a breadth
+// pointer (already captured by the link signals), not comment depth, so it must
+// not by itself make a comment substantive (mirrors the artifact-link counter's
+// isDocLink filter rather than matching any URL).
 func isSubstantiveComment(body string) bool {
 	if strings.Contains(body, "```") {
 		return true
 	}
-	if urlPattern.MatchString(body) {
-		return true
+	for _, u := range urlPattern.FindAllString(body, -1) {
+		if isDocLink(u) {
+			return true
+		}
 	}
 	return len(strings.TrimSpace(body)) >= substantiveCommentLen
 }

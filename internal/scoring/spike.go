@@ -22,7 +22,14 @@ func bandSpike(ev *TicketEvidence, cfg config.StoryPointsConfig) BandResult {
 	sc := cfg.Spike
 
 	cycleDays := cycleDays(ev)
-	artifacts := ev.ArtifactLinks + ev.SubstantiveComments
+	// Substantive comments feed the artifact axis with diminishing returns: a
+	// spike's depth concentrates in a few deep comments, so beyond the cap extra
+	// comments are mostly chatter and don't raise the band. Doc-links are uncapped.
+	substantive := ev.SubstantiveComments
+	if sc.SubstantiveCommentCap > 0 && substantive > sc.SubstantiveCommentCap {
+		substantive = sc.SubstantiveCommentCap
+	}
+	artifacts := ev.ArtifactLinks + substantive
 	longCycle := cycleDays >= sc.CycleDaysThreshold
 	highArtifacts := artifacts >= sc.ArtifactThreshold
 
@@ -42,7 +49,7 @@ func bandSpike(ev *TicketEvidence, cfg config.StoryPointsConfig) BandResult {
 	// distinct planning artifact past the first nudges up modestly; heavy status
 	// churn signals a winding investigation.
 	if artifacts > sc.ArtifactThreshold {
-		add(float64(artifacts-sc.ArtifactThreshold)*0.5, "Investigation depth: %d artifact(s) (%d link, %d substantive comment)", artifacts, ev.ArtifactLinks, ev.SubstantiveComments)
+		add(float64(artifacts-sc.ArtifactThreshold)*0.5, "Investigation depth: %d artifact(s) (%d link, %d substantive comment)", artifacts, ev.ArtifactLinks, substantive)
 	}
 	if ev.StatusFlips >= 4 {
 		add(1.0, "Status churn: %d transitions", ev.StatusFlips)
@@ -77,7 +84,7 @@ func bandSpike(ev *TicketEvidence, cfg config.StoryPointsConfig) BandResult {
 		res.Drivers = append(res.Drivers, d.text)
 	}
 
-	res.HardestAspectHint, res.SignalSummary = explainSpike(ev, drivers, cycleDays, artifacts, cell)
+	res.HardestAspectHint, res.SignalSummary = explainSpike(ev, drivers, cycleDays, artifacts, substantive, cell)
 	res.Confidence, res.NeedsInsight, res.InsightReason = judgeSpike(longCycle, highArtifacts, artifacts, ev.StatusFlips, ev.SpawnedCount, straddle)
 	return res
 }
@@ -119,7 +126,7 @@ func judgeSpike(longCycle, highArtifacts bool, artifacts, statusFlips, spawned i
 }
 
 // explainSpike builds the spike hint + one-line summary (no LOC axis).
-func explainSpike(ev *TicketEvidence, drivers []driver, cycleDays float64, artifacts int, cell string) (hint, summary string) {
+func explainSpike(ev *TicketEvidence, drivers []driver, cycleDays float64, artifacts, substantive int, cell string) (hint, summary string) {
 	if len(drivers) > 0 {
 		hint = drivers[0].text
 	} else {
@@ -128,7 +135,7 @@ func explainSpike(ev *TicketEvidence, drivers []driver, cycleDays float64, artif
 	parts := []string{
 		"spike",
 		fmt.Sprintf("cycle %.1fd", cycleDays),
-		fmt.Sprintf("%d artifact(s) (%d link/%d comment)", artifacts, ev.ArtifactLinks, ev.SubstantiveComments),
+		fmt.Sprintf("%d artifact(s) (%d link/%d comment)", artifacts, ev.ArtifactLinks, substantive),
 		fmt.Sprintf("%d status flips", ev.StatusFlips),
 	}
 	summary = strings.Join(parts, " · ")

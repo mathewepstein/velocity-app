@@ -127,6 +127,169 @@ func TestUpdateEloHighRatedDevGetsLessUpsideForExpectedWins(t *testing.T) {
 	}
 }
 
+func TestStdevPop(t *testing.T) {
+	// Population stdev of {2,4,4,4,5,5,7,9} = 2 (classic textbook example).
+	if got := stdevPop([]float64{2, 4, 4, 4, 5, 5, 7, 9}); math.Abs(got-2) > 1e-9 {
+		t.Errorf("stdevPop = %v, want 2", got)
+	}
+	// Two values: population stdev = |a-b|/2.
+	if got := stdevPop([]float64{1, 5}); math.Abs(got-2) > 1e-9 {
+		t.Errorf("stdevPop([1,5]) = %v, want 2", got)
+	}
+	// Degenerate: <2 values or uniform → 0.
+	if got := stdevPop([]float64{42}); got != 0 {
+		t.Errorf("single-value stdevPop = %v, want 0", got)
+	}
+	if got := stdevPop([]float64{7, 7, 7}); got != 0 {
+		t.Errorf("uniform stdevPop = %v, want 0", got)
+	}
+}
+
+func TestMarginResult(t *testing.T) {
+	// No deadzone (band=0): tie → 0.5.
+	if got := marginResult(5, 5, 2, 0); math.Abs(got-0.5) > 1e-9 {
+		t.Errorf("tie marginResult = %v, want 0.5", got)
+	}
+	// band=0, gap 2σ above → logistic(2) ≈ 0.8808 (the C2 target).
+	if got := marginResult(10, 6, 2, 0); math.Abs(got-0.8807970779778823) > 1e-9 {
+		t.Errorf("2-sigma marginResult = %v, want ~0.8808", got)
+	}
+	// Symmetry: i vs j and j vs i sum to 1 (holds with or without a band).
+	a := marginResult(8, 3, 2, 1)
+	b := marginResult(3, 8, 2, 1)
+	if math.Abs(a+b-1) > 1e-9 {
+		t.Errorf("marginResult not symmetric: %v + %v = %v, want 1", a, b, a+b)
+	}
+	// scale≈0 (uniform period) → draw regardless of gap.
+	if got := marginResult(10, 1, 0, 0); got != 0.5 {
+		t.Errorf("scale=0 marginResult = %v, want 0.5", got)
+	}
+}
+
+func TestMarginResultDeadzone(t *testing.T) {
+	scale, band := 2.0, 1.0
+	// A gap inside the deadzone (|d| ≤ band) is a draw — near-ties get no win
+	// weighting, the hybrid behavior Mathew asked for.
+	if got := marginResult(5.5, 5, scale, band); got != 0.5 {
+		t.Errorf("near-tie inside deadzone = %v, want 0.5", got)
+	}
+	if got := marginResult(6, 5, scale, band); got != 0.5 {
+		t.Errorf("gap exactly at band edge = %v, want 0.5", got)
+	}
+	// Just beyond the band, the *excess* gap (|d|−band) drives the logistic —
+	// not the full gap. A gap of band+2·scale scores logistic(2)≈0.88.
+	if got := marginResult(5+1+4, 5, scale, band); math.Abs(got-0.8807970779778823) > 1e-9 {
+		t.Errorf("clear over-performer = %v, want ~0.8808 (excess gap, not full)", got)
+	}
+	// A clear under-performer mirrors below 0.5.
+	if got := marginResult(5, 5+1+4, scale, band); math.Abs(got-(1-0.8807970779778823)) > 1e-9 {
+		t.Errorf("clear under-performer = %v, want ~0.1192", got)
+	}
+}
+
+func TestRoundRobinScoreNoPlateauCap(t *testing.T) {
+	// A dev who out-produces the whole field by a wide margin approaches S=1 —
+	// no logisticZ ~0.73 cap. This is the flatten-top fix (C3 fault #2).
+	scores := []float64{1, 2, 3, 4, 100}
+	scale := stdevPop(scores)
+	s := roundRobinScore(scores, scale, 0)
+	// The old logisticZ outcome capped a dominant dev near ~0.73; the
+	// round-robin top clears that comfortably and keeps room to climb.
+	lz := logisticZ(scores)
+	if s[4] <= lz[4] {
+		t.Errorf("round-robin top S = %v should exceed logisticZ top = %v", s[4], lz[4])
+	}
+	if s[4] < 0.85 {
+		t.Errorf("dominant dev S = %v, want > 0.85 (well above the old ~0.73 cap)", s[4])
+	}
+	// Field totals are zero-sum around 0.5: mean of all S_i = 0.5.
+	var sum float64
+	for _, v := range s {
+		sum += v
+	}
+	if math.Abs(sum/float64(len(s))-0.5) > 1e-9 {
+		t.Errorf("mean S = %v, want 0.5 (round-robin is balanced)", sum/float64(len(s)))
+	}
+	// Monotonic with score.
+	for i := 1; i < len(s); i++ {
+		if s[i] <= s[i-1] {
+			t.Errorf("S not monotonic at %d: %v <= %v", i, s[i], s[i-1])
+		}
+	}
+}
+
+func TestRoundRobinScoreDegenerate(t *testing.T) {
+	// Solo or uniform → 0.5 everywhere ("drew the period").
+	if got := roundRobinScore([]float64{9}, 0, 0); len(got) != 1 || got[0] != 0.5 {
+		t.Errorf("solo roundRobinScore = %v, want [0.5]", got)
+	}
+	got := roundRobinScore([]float64{5, 5, 5}, 0, 0)
+	for i, v := range got {
+		if v != 0.5 {
+			t.Errorf("uniform roundRobinScore[%d] = %v, want 0.5", i, v)
+		}
+	}
+}
+
+func TestRoundRobinScoreDeadzoneCollapsesMidPack(t *testing.T) {
+	// A clustered mid-pack with one clear over-performer and one clear
+	// under-performer. With a deadzone, the clustered devs play near-ties
+	// against each other (≈0.5, no win weighting) while the extremes stretch
+	// away — the hybrid Mathew asked for.
+	scores := []float64{0, 9.7, 10, 10.3, 20}
+	sd := stdevPop(scores)
+	band := 0.5 * sd
+	s := roundRobinScore(scores, sd, band)
+	// The three clustered devs (indices 1,2,3) sit within the deadzone of each
+	// other, so their pairwise games are draws; their S stays near 0.5.
+	for _, i := range []int{1, 2, 3} {
+		if math.Abs(s[i]-0.5) > 0.2 {
+			t.Errorf("mid-pack dev %d S = %v, want near 0.5 (deadzone)", i, s[i])
+		}
+	}
+	// The extremes still separate clearly — well clear of the mid-pack's ~0.5.
+	if s[4] < 0.75 {
+		t.Errorf("top dev S = %v, want > 0.75 (stretches away)", s[4])
+	}
+	if s[0] > 0.25 {
+		t.Errorf("bottom dev S = %v, want < 0.25 (stretches away)", s[0])
+	}
+	// Compared to no deadzone, the mid-pack spread shrinks (collapses inward).
+	noDz := roundRobinScore(scores, sd, 0)
+	if (s[3] - s[1]) >= (noDz[3] - noDz[1]) {
+		t.Errorf("deadzone should compress mid-pack: dz spread %v vs no-dz %v", s[3]-s[1], noDz[3]-noDz[1])
+	}
+}
+
+func TestRoundRobinExpected(t *testing.T) {
+	// All equal ratings → expected 0.5 for everyone.
+	got := roundRobinExpected([]float64{1000, 1000, 1000})
+	for i, v := range got {
+		if math.Abs(v-0.5) > 1e-9 {
+			t.Errorf("equal-rating E[%d] = %v, want 0.5", i, v)
+		}
+	}
+	// A higher-rated dev faces a higher expected score than a lower-rated one;
+	// the field-averaged expecteds sum to (n-1)/... — but the key property is
+	// monotonicity and that E sums are balanced around 0.5.
+	r := []float64{800, 1000, 1200}
+	e := roundRobinExpected(r)
+	if !(e[0] < e[1] && e[1] < e[2]) {
+		t.Errorf("E not monotonic with rating: %v", e)
+	}
+	var sum float64
+	for _, v := range e {
+		sum += v
+	}
+	if math.Abs(sum/float64(len(e))-0.5) > 1e-9 {
+		t.Errorf("mean E = %v, want 0.5", sum/float64(len(e)))
+	}
+	// Solo → 0.5.
+	if got := roundRobinExpected([]float64{1234}); len(got) != 1 || got[0] != 0.5 {
+		t.Errorf("solo roundRobinExpected = %v, want [0.5]", got)
+	}
+}
+
 func TestLogisticZSymmetry(t *testing.T) {
 	// Symmetric inputs around the mean should produce actuals symmetric
 	// around 0.5: top and bottom mirror, sum is 1.0.

@@ -67,7 +67,8 @@ type WindowRange struct {
 // WeeklyRow uses raw uncapped LOC since there's no team distribution to cap
 // against at row level.
 type Totals struct {
-	JiraIssuesTouched     int     `json:"jira_issues_touched"`
+	JiraIssuesTouched     int     `json:"jira_issues_touched"` // display-only: tickets the dev owns that were updated in-window (retired from scoring in B2)
+	JiraIssuesProgressed  int     `json:"jira_issues_progressed"` // SCORED (B2): distinct issues the dev personally advanced through the build pipeline in-window (dev-authored changelog transitions)
 	JiraIssuesCreated     int     `json:"jira_issues_created"`
 	JiraIssuesResolved    int     `json:"jira_issues_resolved"`
 	StoryPoints           float64 `json:"story_points"`            // sum of SP on scored issues resolved in window

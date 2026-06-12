@@ -16,7 +16,8 @@ const (
 	metricCodeImpact         = "code_impact"
 	metricPRsReviewed        = "prs_reviewed"
 	metricPRsCreated         = "prs_created"
-	metricJiraIssuesTouched  = "jira_issues_touched"
+	metricJiraIssuesProgressed = "jira_issues_progressed"
+	metricJiraIssuesCreated  = "jira_issues_created"
 	metricActiveWeeks        = "active_weeks"
 	metricStoryPoints        = "story_points"
 	metricLOCChanged         = "loc_changed"
@@ -33,7 +34,8 @@ var allMetrics = []string{
 	metricCodeImpact,
 	metricPRsReviewed,
 	metricPRsCreated,
-	metricJiraIssuesTouched,
+	metricJiraIssuesProgressed,
+	metricJiraIssuesCreated,
 	metricActiveWeeks,
 	metricStoryPoints,
 	metricLOCChanged,
@@ -88,8 +90,13 @@ func rawMetricValue(t Totals, metric string) float64 {
 		return float64(t.PRsReviewed)
 	case metricPRsCreated:
 		return float64(t.PRsCreated)
-	case metricJiraIssuesTouched:
-		return float64(t.JiraIssuesTouched)
+	case metricJiraIssuesProgressed:
+		return float64(t.JiraIssuesProgressed)
+	case metricJiraIssuesCreated:
+		// B5 planning credit: raw distinct issues the dev filed (reporter-
+		// attributed). sqrt-saturated in computeContributorScores so filing
+		// volume can't be farmed into rank.
+		return float64(t.JiraIssuesCreated)
 	case metricActiveWeeks:
 		return float64(t.ActiveWeeks)
 	case metricStoryPoints:
@@ -166,6 +173,15 @@ func computeContributorScores(devs []DevWindowMetrics, weights map[string]float6
 				if col[idx] > cap95 {
 					col[idx] = cap95
 				}
+				col[idx] = math.Sqrt(col[idx])
+			}
+		}
+		// B5: sqrt-saturate jira_issues_created so a heavy ticket-filer's
+		// volume advantage compresses (10x filed ≈ 3x credit) — rewards that
+		// planning happened, never filing count. No p95 cap; sqrt alone
+		// saturates and the low weight keeps it a minor nudge.
+		if m == metricJiraIssuesCreated {
+			for idx := range col {
 				col[idx] = math.Sqrt(col[idx])
 			}
 		}

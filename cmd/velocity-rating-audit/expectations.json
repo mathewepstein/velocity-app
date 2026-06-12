@@ -1,0 +1,43 @@
+{
+  "_doc": "Locked directional expectations for the rating/composite overhaul. Evidence-backed per-dev assertions used as the validation GATE in place of Spearman ρ (self-agreement, not accuracy). Each note is tagged with the phase whose change makes the expectation hold. Excluded devs (role qa/exec) are NOT listed here — they are off the board (E). Run on the pre-fix baseline, the onset/resolved checks are EXPECTED to fail: that proves both the bug and the detector.",
+  "max_unexplained_rank_move": 8,
+  "expectations": [
+    {
+      "dev": "Ashkan Ghaffari",
+      "check": "first_period_on_or_after",
+      "value": "2026-02-23",
+      "note": "[Phase 1 / A] emergent onset. Earliest GH-actor signal VERIFIED 2026-03-06 (commit 00:23Z; first authored PR + first review also 03-06 — velocity.db). Bi-weekly periods are labeled by their START date, so Mar 6 falls in period [2026-02-23 .. 2026-03-08] → first_period=2026-02-23. Pre-fix baseline opened 2025-12-29 with ~5 phantom pre-onset periods from inherited backlog tickets; all eliminated. Threshold = period-start of his true onset, NOT Mar 1 (the original value ignored the period boundary, the cosmetic ISO-week-axis effect flagged in jira-attribution-fix-plan)."
+    },
+    {
+      "dev": "Paul Torres",
+      "check": "composite_rank_dir",
+      "value": "down",
+      "note": "[Phase 1 / B1] 77% reporter-only resolved; assignee-only should drop him. (role=dev, stays on board.)"
+    },
+    {
+      "dev": "Christian Corey",
+      "check": "elo_rating_dir",
+      "value": "down",
+      "max_abs_drop": 150,
+      "note": "[Phase 1 / A+B1] role=lead, codes less; 52% reporter-only resolved removed. Elo should slide GENTLY (still plays via reviews), not fall off a cliff. THE 'don't tank leads' GUARD."
+    },
+    {
+      "dev": "Christian Corey",
+      "check": "periods_played_dir",
+      "value": "stable",
+      "note": "[Phase 1 / A] reviews keep him participating every period; periods played must not collapse when Jira stops gating participation."
+    },
+    {
+      "dev": "Michael Arciniega",
+      "check": "composite_rank_dir",
+      "value": "down",
+      "note": "[Phase 2 / B2] devops: 324 owned-'touched' tickets (assignee|reporter, updated in-window) but only 47 distinct issues he personally advanced through the build pipeline (dev-authored changelog transitions, verified velocity.db). Replacing passive 'touched' with actor-attributed progress removes the over-credit → he drops. The canonical 'passive owner' case from signal-audit Finding B."
+    },
+    {
+      "dev": "Christian Corey",
+      "check": "composite_rank_dir",
+      "value": "stable",
+      "note": "[Phase 3 / B4+B5] lead-measurability check. B1 stripped his phantom reporter-resolved credit (52% reporter-only) pushing his composite down; B5 planning credit (78 issues filed, sqrt-saturated @0.25) + B4's reduced resolved weight restore it → he lands NEAR his original cohort rank (within ±1.5), now for the right reasons (real reviews + planning, not inherited filing). B5 working as intended: keeps leads on the board without letting filing volume dominate."
+    }
+  ]
+}

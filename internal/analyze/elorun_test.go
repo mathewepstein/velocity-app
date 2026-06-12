@@ -20,6 +20,90 @@ func TestDevKey(t *testing.T) {
 	}
 }
 
+func TestHasAnyActivityGatesOnGitHubSignalsOnly(t *testing.T) {
+	cases := []struct {
+		name string
+		t    Totals
+		want bool
+	}{
+		{"commit only", Totals{Commits: 1}, true},
+		{"review only", Totals{PRsReviewed: 1}, true},
+		{"authored PR only", Totals{PRsCreated: 1}, true},
+		{"merged PR only", Totals{PRsMerged: 1}, true},
+		{"jira touched only", Totals{JiraIssuesTouched: 5}, false},
+		{"jira created only", Totals{JiraIssuesCreated: 3}, false},
+		{"jira resolved only", Totals{JiraIssuesResolved: 2}, false},
+		{"all jira, no GH", Totals{JiraIssuesTouched: 1, JiraIssuesCreated: 1, JiraIssuesResolved: 1}, false},
+		{"empty", Totals{}, false},
+	}
+	for _, c := range cases {
+		if got := hasAnyActivity(c.t); got != c.want {
+			t.Errorf("%s: hasAnyActivity = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestApplyEloPeriodJiraOnlyDevDoesNotPlay(t *testing.T) {
+	// A: a dev whose only signal in the period is inherited Jira activity (an
+	// owned ticket created/resolved in-window) must NOT play — no phantom
+	// pre-onset period.
+	period := "2024-P19" // 2024-05-06 .. 2024-05-19
+	data := &Loaded{
+		Issues: []cache.JiraIssue{
+			{Key: "CD-1", Assignee: "acct-newbie", Reporter: "acct-pm",
+				Created:  mustTime("2024-05-08T00:00:00Z"),
+				Updated:  mustTime("2024-05-09T00:00:00Z"),
+				Resolved: ptrTime(mustTime("2024-05-10T00:00:00Z"))},
+		},
+		PRs: []cache.GitHubPR{
+			{Number: 1, Author: "coder", Created: mustTime("2024-05-10T00:00:00Z"),
+				Merged: ptrTime(mustTime("2024-05-12T00:00:00Z")), Additions: 10},
+		},
+	}
+	devs := []config.DevIdentity{
+		{JiraAccountID: "acct-newbie", GitHubLogins: []string{"newbie"}, DisplayName: "Newbie"},
+		{GitHubLogins: []string{"coder"}, DisplayName: "Coder"},
+	}
+	state := map[string]cache.DevRatingState{}
+	scoring := config.ScoringConfig{
+		KTiers:         []config.KTier{{MinPeriods: 0, K: 32}},
+		Weights:        map[string]float64{"prs_merged": 3.0, "jira_issues_resolved": 2.0},
+		EloMarginScale: 1.0,
+	}
+	if err := applyEloPeriod(state, devs, data, period, scoring); err != nil {
+		t.Fatalf("applyEloPeriod: %v", err)
+	}
+	if _, ok := state["acct-newbie"]; ok {
+		t.Errorf("Newbie has only inherited Jira activity and must not play the period")
+	}
+	if _, ok := state["gh:coder"]; !ok {
+		t.Errorf("Coder pushed code and should play")
+	}
+}
+
+func TestPeriodTotalsResolutionIsAssigneeOnly(t *testing.T) {
+	// B1: in the Elo path too, resolution credits the assignee only.
+	start := mustTime("2026-02-01T00:00:00Z")
+	end := mustTime("2026-02-28T00:00:00Z")
+	data := &Loaded{
+		Issues: []cache.JiraIssue{
+			{Key: "CD-20", Assignee: "acct-other", Reporter: "acct-carol",
+				Created:  mustTime("2026-02-03T00:00:00Z"),
+				Updated:  mustTime("2026-02-04T00:00:00Z"),
+				Resolved: ptrTime(mustTime("2026-02-10T00:00:00Z"))},
+		},
+	}
+	carol := config.DevIdentity{JiraAccountID: "acct-carol"}
+	tot := periodTotals(data, carol, start, end)
+	// She reported it (touched + created credit) but did not resolve it.
+	if tot.JiraIssuesTouched != 1 {
+		t.Errorf("carol touched = %d, want 1 (reporter)", tot.JiraIssuesTouched)
+	}
+	if tot.JiraIssuesResolved != 0 {
+		t.Errorf("carol resolved = %d, want 0 (she is reporter, not assignee)", tot.JiraIssuesResolved)
+	}
+}
+
 func TestApplyEloPeriodSkipsIdleDevs(t *testing.T) {
 	// Alice has activity in the period; Bob has none. Only Alice should gain
 	// a history entry.
@@ -36,8 +120,9 @@ func TestApplyEloPeriodSkipsIdleDevs(t *testing.T) {
 	}
 	state := map[string]cache.DevRatingState{}
 	scoring := config.ScoringConfig{
-		KTiers:  []config.KTier{{MinPeriods: 0, K: 32}, {MinPeriods: 6, K: 16}},
-		Weights: map[string]float64{"prs_merged": 3.0},
+		KTiers:         []config.KTier{{MinPeriods: 0, K: 32}, {MinPeriods: 6, K: 16}},
+		Weights:        map[string]float64{"prs_merged": 3.0},
+		EloMarginScale: 1.0,
 	}
 	if err := applyEloPeriod(state, devs, data, period, scoring); err != nil {
 		t.Fatalf("applyEloPeriod: %v", err)
@@ -72,7 +157,7 @@ func TestApplyEloPeriodSoloDevDrawsAtHalf(t *testing.T) {
 		{GitHubLogins: []string{"alice"}, DisplayName: "Alice"},
 	}
 	state := map[string]cache.DevRatingState{}
-	scoring := config.ScoringConfig{KTiers: []config.KTier{{MinPeriods: 0, K: 32}, {MinPeriods: 6, K: 16}}, Weights: map[string]float64{"prs_merged": 3.0}}
+	scoring := config.ScoringConfig{KTiers: []config.KTier{{MinPeriods: 0, K: 32}, {MinPeriods: 6, K: 16}}, Weights: map[string]float64{"prs_merged": 3.0}, EloMarginScale: 1.0}
 	if err := applyEloPeriod(state, devs, data, period, scoring); err != nil {
 		t.Fatalf("applyEloPeriod: %v", err)
 	}
@@ -95,8 +180,8 @@ func TestApplyEloPeriodRewardsTopAndPenalizesBottom(t *testing.T) {
 	pr := func(num int, author string, addn int) cache.GitHubPR {
 		return cache.GitHubPR{
 			Number: num, Author: author,
-			Created: mustTime("2024-05-08T00:00:00Z"),
-			Merged:  ptrTime(mustTime("2024-05-10T00:00:00Z")),
+			Created:   mustTime("2024-05-08T00:00:00Z"),
+			Merged:    ptrTime(mustTime("2024-05-10T00:00:00Z")),
 			Additions: addn,
 		}
 	}
@@ -111,7 +196,7 @@ func TestApplyEloPeriodRewardsTopAndPenalizesBottom(t *testing.T) {
 		{GitHubLogins: []string{"bob"}, DisplayName: "Bob"},
 	}
 	state := map[string]cache.DevRatingState{}
-	scoring := config.ScoringConfig{KTiers: []config.KTier{{MinPeriods: 0, K: 32}, {MinPeriods: 6, K: 16}}, Weights: map[string]float64{"prs_merged": 3.0}}
+	scoring := config.ScoringConfig{KTiers: []config.KTier{{MinPeriods: 0, K: 32}, {MinPeriods: 6, K: 16}}, Weights: map[string]float64{"prs_merged": 3.0}, EloMarginScale: 1.0}
 	if err := applyEloPeriod(state, devs, data, period, scoring); err != nil {
 		t.Fatalf("applyEloPeriod: %v", err)
 	}
@@ -147,7 +232,7 @@ func TestAdvanceRatingsSkipsAlreadyAppliedPeriods(t *testing.T) {
 		},
 	}
 	devs := []config.DevIdentity{{GitHubLogins: []string{"alice"}, DisplayName: "Alice"}}
-	scoring := config.ScoringConfig{KTiers: []config.KTier{{MinPeriods: 0, K: 32}, {MinPeriods: 6, K: 16}}, Weights: map[string]float64{"prs_merged": 3.0}}
+	scoring := config.ScoringConfig{KTiers: []config.KTier{{MinPeriods: 0, K: 32}, {MinPeriods: 6, K: 16}}, Weights: map[string]float64{"prs_merged": 3.0}, EloMarginScale: 1.0}
 	// "Now" past P21 end (2024-06-02).
 	now := time.Date(2024, 6, 10, 0, 0, 0, 0, time.UTC)
 	last, err := advanceRatings(rt, devs, data, cache.MustParseMonth("2024-05"), cache.MustParseMonth("2024-06"), scoring, now)
@@ -176,6 +261,7 @@ func idleDecayScoring() config.ScoringConfig {
 		Weights:        map[string]float64{"prs_merged": 3.0},
 		IdleDecayAfter: 3,
 		IdleDecayDelta: 8.0,
+		EloMarginScale: 1.0,
 	}
 }
 

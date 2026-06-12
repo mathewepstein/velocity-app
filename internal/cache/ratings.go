@@ -21,7 +21,13 @@ const RatingsFile = "ratings.json"
 // idle-period decay machinery. v1 files load with IdleStreak=0 across the
 // board — for accurate streak counts, run `velocity analyze --rebuild` once
 // after upgrade.
-const CurrentRatingsVersion = 2
+//
+// v3 (Phase 4 Elo redesign): no schema change, but the per-period outcome
+// model changed from logisticZ(score)-vs-teamMean to an averaged margin-scaled
+// pairwise round-robin (see elo.go roundRobinScore/roundRobinExpected). Ratings
+// computed under v2 are stale under the new model — bumping forces awareness
+// that a full `velocity analyze --rebuild` is required to recompute history.
+const CurrentRatingsVersion = 3
 
 // Ratings is the persisted Elo state. Keyed by stable per-dev identity:
 // the dev's Jira accountId if present, else "gh:<first-github-login>". The

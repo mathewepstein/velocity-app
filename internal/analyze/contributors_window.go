@@ -56,7 +56,7 @@ func ContributorsForWindow(opts Options, from, to cache.Month) ([]DevWindowMetri
 	// attribution is identical regardless of the scoring window.
 	projects := detectProjects(data, opts.Profile.Surge)
 
-	devs := buildDevWindows(data, opts.Profile.Devs, opts.Profile.Scoring.EffectiveExcludes(), from, to, backfillStart, current, ci, norm)
+	devs := buildDevWindows(data, opts.Profile.Devs, opts.Profile.Scoring.EffectiveExcludes(), opts.Profile.Scoring.ExcludedRoles, from, to, backfillStart, current, ci, norm)
 	applyCodeImpactCap(devs, ci)
 	devs = attachProjectShares(devs, buildProjectShares(data, projects, ci))
 	devs = computeContributorScores(devs, opts.Profile.Scoring.Weights, norm)

@@ -284,6 +284,12 @@ type DevIdentity struct {
 	JiraAccountID string   `toml:"jira_account_id" json:"jira_account_id"`
 	DisplayName   string   `toml:"display_name" json:"display_name"`
 	ExcludedBot   bool     `toml:"excluded_bot,omitempty" json:"excluded_bot,omitempty"`
+	// Role classifies the dev for the leaderboard. Empty defaults to "dev"
+	// (see EffectiveRole). Scored roles: dev, lead, devops. Non-scored roles
+	// (qa, exec, excluded) are dropped from the board via Scoring.ExcludedRoles
+	// — programmatic, org-portable, no hardcoded GitHub-login list. lead and
+	// devops stay on the board but carry the tag for UI highlighting.
+	Role string `toml:"role,omitempty" json:"role,omitempty"`
 }
 
 // AllGitHubLogins returns the set of GitHub identifiers this dev claims. Falls
@@ -334,8 +340,29 @@ type ScoringConfig struct {
 	IdleDecayAfter          int                `toml:"idle_decay_after"`
 	IdleDecayDelta          float64            `toml:"idle_decay_delta"`
 	ProvisionalUntilPeriods int                `toml:"provisional_until_periods"`
-	PeriodWeeks             int                `toml:"period_weeks"`
-	Exclude                 []string           `toml:"exclude"`
+	// Phase 4 Elo round-robin margin knobs. The per-period outcome is an
+	// averaged pairwise margin game on the composite axis; both knobs are in
+	// units of the period's score stdev (σ), so they're scale-free.
+	//   EloMarginScale    — post-deadzone logistic steepness (× σ). Smaller =
+	//     clear over-performers stretch further apart. Default 0.5.
+	//   EloMarginDeadzone — half-width of the near-tie band (× σ) that scores
+	//     0.5 (no win weighting). Larger = more of the mid-pack is treated as
+	//     tied and collapses toward the center. Default 0.75.
+	//
+	// The pair is tuned together: a wide deadzone (0.75σ) quiets the noisy
+	// mid-pack (near-ties don't move ratings) while the tight scale (0.5σ)
+	// makes the curve steep just past the band, so genuine over-performers
+	// stretch away from the field. Validated against the live cohort
+	// (Phase-4 redesign): widest top-to-#2 gap with the lowest mid-pack spread.
+	EloMarginScale    float64  `toml:"elo_margin_scale"`
+	EloMarginDeadzone float64  `toml:"elo_margin_deadzone"`
+	PeriodWeeks       int      `toml:"period_weeks"`
+	Exclude           []string `toml:"exclude"`
+	// ExcludedRoles lists DevIdentity.Role values that are dropped from the
+	// leaderboard (composite + Elo). Default ["qa","exec","excluded"]. Role
+	// matching is case-insensitive. This is the org-portable replacement for
+	// hardcoding non-dev people into the GitHub-login Exclude list.
+	ExcludedRoles []string `toml:"excluded_roles"`
 }
 
 // CodeImpactConfig parameterises the `code_impact` composite metric. The
@@ -612,15 +639,16 @@ func DefaultStoryPointsConfig() StoryPointsConfig {
 func DefaultScoringConfig() ScoringConfig {
 	return ScoringConfig{
 		Weights: map[string]float64{
-			"prs_merged":           3.0,
-			"jira_issues_resolved": 2.0,
-			"code_impact":          1.5,
-			"prs_reviewed":         1.0,
-			"prs_created":          0.5,
-			"jira_issues_touched":  0.5,
-			"active_weeks":         0.5,
-			"story_points":         0.5,
-			"loc_changed":          0.25,
+			"prs_merged":             3.0,
+			"jira_issues_resolved":   1.5,
+			"code_impact":            1.5,
+			"prs_reviewed":           1.0,
+			"prs_created":            0.5,
+			"jira_issues_progressed": 0.5,
+			"active_weeks":           0.5,
+			"story_points":           0.5,
+			"jira_issues_created":    0.25,
+			"loc_changed":            0.25,
 		},
 		CodeImpact: CodeImpactConfig{
 			Alpha: 1.0,
@@ -695,6 +723,9 @@ func DefaultScoringConfig() ScoringConfig {
 		IdleDecayAfter:          3,
 		IdleDecayDelta:          8.0,
 		ProvisionalUntilPeriods: 12,
+		EloMarginScale:          0.5,
+		EloMarginDeadzone:       0.75,
+		ExcludedRoles:           []string{"qa", "exec", "excluded"},
 		PeriodWeeks:             2,
 	}
 }
@@ -766,6 +797,27 @@ func (s ScoringConfig) EffectiveExcludes() []string {
 		out = append(out, p)
 	}
 	return out
+}
+
+// EffectiveRole returns the dev's classification, defaulting to "dev" when
+// unset. Lower-cased + trimmed so config is case-insensitive.
+func (d DevIdentity) EffectiveRole() string {
+	r := strings.ToLower(strings.TrimSpace(d.Role))
+	if r == "" {
+		return "dev"
+	}
+	return r
+}
+
+// RoleExcluded reports whether role appears in excludedRoles (case-insensitive).
+// Used to drop non-scored roles (qa/exec/excluded by default) from the board.
+func RoleExcluded(role string, excludedRoles []string) bool {
+	for _, e := range excludedRoles {
+		if strings.EqualFold(strings.TrimSpace(e), role) {
+			return true
+		}
+	}
+	return false
 }
 
 // Load reads and parses the config file at Path(). Returns os.ErrNotExist
@@ -980,6 +1032,15 @@ func (c *Config) applyDefaults() {
 	}
 	if p.Scoring.ProvisionalUntilPeriods == 0 {
 		p.Scoring.ProvisionalUntilPeriods = defaults.Scoring.ProvisionalUntilPeriods
+	}
+	if p.Scoring.EloMarginScale == 0 {
+		p.Scoring.EloMarginScale = defaults.Scoring.EloMarginScale
+	}
+	if p.Scoring.EloMarginDeadzone == 0 {
+		p.Scoring.EloMarginDeadzone = defaults.Scoring.EloMarginDeadzone
+	}
+	if p.Scoring.ExcludedRoles == nil {
+		p.Scoring.ExcludedRoles = defaults.Scoring.ExcludedRoles
 	}
 	// CodeImpact coefficients fill in field-by-field so a user can override
 	// one without re-declaring all three.

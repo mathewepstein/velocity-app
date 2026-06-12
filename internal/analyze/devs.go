@@ -1,10 +1,90 @@
 package analyze
 
 import (
+	"time"
+
 	"github.com/mathewepstein/velocity/internal/cache"
 	"github.com/mathewepstein/velocity/internal/config"
 	"github.com/mathewepstein/velocity/internal/devs"
 )
+
+// resolvedCreditedTo reports whether issue i's resolution — and the story
+// points that ride it — should be credited to dev id. B1/B3: assignee-only.
+// The reporter filed the ticket; the assignee did the work, so a reporter who
+// never owned the ticket must not inherit its resolution. Shared by the
+// composite path (filterForDev) and the Elo path (periodTotals) so the two
+// attribution sites can't drift.
+func resolvedCreditedTo(i cache.JiraIssue, id config.DevIdentity) bool {
+	return id.JiraAccountID != "" && i.Assignee == id.JiraAccountID
+}
+
+// devProgressedIssues counts DISTINCT issues that dev id personally advanced
+// through the build pipeline within the window tested by inWindow — i.e. the
+// dev AUTHORED at least one status transition INTO a dev-pipeline stage
+// (In Progress / Code Review / Ready QA; workflowRank 1-3) whose event time
+// passes inWindow. B2's replacement for jira_issues_touched: actor- AND
+// time-correct (it matches changelog.Author against the event's own At), so it
+// cannot be inherited the way assignee/reporter attribution can. QA pickup
+// (In QA), closes (Done/Closed/Resolved), and backlog/triage moves (rank 0) are
+// excluded as not-dev-progress. The distinct-issue (not raw-transition) shape
+// rewards throughput, resists churn-gaming, and is robust to the changelog's
+// snapshot duplication (the same key in several month cells counts once).
+//
+// Scans the FULL corpus, not a per-dev scoped slice: a dev can advance a ticket
+// they neither own nor reported, and actor-attribution must catch that.
+func devProgressedIssues(data *Loaded, id config.DevIdentity, inWindow func(time.Time) bool) int {
+	if id.JiraAccountID == "" {
+		return 0
+	}
+	seen := map[string]struct{}{}
+	for _, iss := range data.Issues {
+		if _, ok := seen[iss.Key]; ok {
+			continue
+		}
+		for _, tr := range iss.Changelog {
+			if tr.Author != id.JiraAccountID {
+				continue
+			}
+			if tr.Field != "" && tr.Field != "status" {
+				continue
+			}
+			if r := workflowRank(tr.To); r < 1 || r > 3 {
+				continue
+			}
+			if !inWindow(tr.At) {
+				continue
+			}
+			seen[iss.Key] = struct{}{}
+			break
+		}
+	}
+	return len(seen)
+}
+
+// devCreatedIssues counts DISTINCT issues dev id REPORTED (filed) with a
+// creation time passing inWindow. Reporter-attribution is correct here — the
+// reporter IS the author/planner — the mirror image of why it's wrong for
+// resolved (resolvedCreditedTo). B5's planning-credit signal; sqrt-saturated +
+// low-weighted downstream so it rewards "planning happened", never filing
+// volume.
+func devCreatedIssues(data *Loaded, id config.DevIdentity, inWindow func(time.Time) bool) int {
+	if id.JiraAccountID == "" {
+		return 0
+	}
+	seen := map[string]struct{}{}
+	for _, iss := range data.Issues {
+		if iss.Reporter != id.JiraAccountID {
+			continue
+		}
+		if _, ok := seen[iss.Key]; ok {
+			continue
+		}
+		if inWindow(iss.Created) {
+			seen[iss.Key] = struct{}{}
+		}
+	}
+	return len(seen)
+}
 
 // filterForDev returns a Loaded containing only records attributed to id.
 //
@@ -12,7 +92,10 @@ import (
 //   - PRs:     Author claimed by id.AllGitHubLogins()
 //   - Commits: Author claimed by id.AllGitHubLogins()
 //   - Reviews: Reviewer claimed by id.AllGitHubLogins()
-//   - Issues:  Assignee == id.JiraAccountID OR Reporter == id.JiraAccountID
+//   - Issues:  Assignee == id.JiraAccountID OR Reporter == id.JiraAccountID,
+//     EXCEPT resolution + story points, which are assignee-only (see
+//     resolvedCreditedTo). A reporter-only issue still counts toward touched /
+//     created but has its Resolved cleared so the rollup can't credit it.
 //
 // An empty id field on either side disables that side's filter — a Jira-only
 // stub dev (no GitHub identifiers) still attributes its issues correctly.
@@ -22,9 +105,17 @@ func filterForDev(data *Loaded, id config.DevIdentity) *Loaded {
 
 	if id.JiraAccountID != "" {
 		for _, iss := range data.Issues {
-			if iss.Assignee == id.JiraAccountID || iss.Reporter == id.JiraAccountID {
-				out.Issues = append(out.Issues, iss)
+			if iss.Assignee != id.JiraAccountID && iss.Reporter != id.JiraAccountID {
+				continue
 			}
+			// B1/B3: resolution + SP are assignee-only. iss is a value copy, so
+			// clearing Resolved here only affects this dev's scoped Loaded; the
+			// rollup gates both the resolved count and StoryPoints on Resolved
+			// != nil, so this zeroes both for reporter-only issues.
+			if !resolvedCreditedTo(iss, id) {
+				iss.Resolved = nil
+			}
+			out.Issues = append(out.Issues, iss)
 		}
 	}
 	if len(id.AllGitHubLogins()) > 0 {
@@ -120,7 +211,7 @@ func filterUnmapped(data *Loaded, devs []config.DevIdentity) *Loaded {
 // every GitHub login matches an exclude pattern is skipped; unmapped records
 // whose author/reviewer matches are dropped before they reach the "unknown"
 // bucket.
-func buildDevWindows(data *Loaded, devIDs []config.DevIdentity, excludes []string, start, end, fullStart, fullEnd cache.Month, ci config.CodeImpactConfig, norm config.NormalizeConfig) []DevWindowMetrics {
+func buildDevWindows(data *Loaded, devIDs []config.DevIdentity, excludes, excludedRoles []string, start, end, fullStart, fullEnd cache.Month, ci config.CodeImpactConfig, norm config.NormalizeConfig) []DevWindowMetrics {
 	out := make([]DevWindowMetrics, 0, len(devIDs)+1)
 	activity := activityCountsByLogin(data)
 	// Corpus-wide file churn index for the optional churn-weighting knob. Built
@@ -131,7 +222,10 @@ func buildDevWindows(data *Loaded, devIDs []config.DevIdentity, excludes []strin
 		churn = buildChurnIndex(data)
 	}
 	for _, id := range devIDs {
-		if devExcluded(id, excludes) {
+		// Skip bot/login excludes AND non-scored roles (qa/exec/excluded). The
+		// dev stays in devIDs so filterUnmapped still treats their records as
+		// mapped — excluded means "off the board", not "reattributed to unknown".
+		if devExcluded(id, excludes) || config.RoleExcluded(id.EffectiveRole(), excludedRoles) {
 			continue
 		}
 		w := buildOneDev(data, id, start, end, fullStart, fullEnd, churn, ci, norm)
@@ -228,6 +322,17 @@ func buildOneDev(data *Loaded, id config.DevIdentity, start, end, fullStart, ful
 	weekly := rollupWeekly(scoped, start, end, ci)
 	totals := totalsFromMonthly(monthly)
 	totals.ActiveWeeks = activeWeeksCount(weekly)
+	// B2: scored Jira-progress signal — distinct issues this dev personally
+	// advanced through the build pipeline in-window (dev-authored changelog
+	// transitions). Scans full data (not scoped) since it's actor-attributed,
+	// not ownership-attributed.
+	totals.JiraIssuesProgressed = devProgressedIssues(data, id, func(t time.Time) bool {
+		return monthInRange(monthKey(t), start, end)
+	})
+	// B5 planning credit: reporter-attributed distinct issues filed in-window.
+	totals.JiraIssuesCreated = devCreatedIssues(data, id, func(t time.Time) bool {
+		return monthInRange(monthKey(t), start, end)
+	})
 	totals.UniqueFilesTouched = uniqueFilesInWindow(scoped, start, end)
 	// Per Phase 6.2: code_impact uses the generated-file-dampened cardinality,
 	// not the raw count, so dependency dumps don't pad the substance score.

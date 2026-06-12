@@ -39,9 +39,10 @@
     code_impact:          'Code impact',
     prs_reviewed:         'PR reviews',
     prs_created:          'PRs opened',
-    jira_issues_touched:  'Issues touched',
+    jira_issues_progressed: 'Issues progressed',
     active_weeks:         'Active weeks',
     story_points:         'Story points',
+    jira_issues_created:  'Issues filed',
     loc_changed:          'LoC changed',
     commits:              'Commits',
   };

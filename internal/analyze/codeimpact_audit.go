@@ -64,7 +64,7 @@ func CohortForCurrentWindow(opts Options) ([]DevWindowMetrics, WindowMetrics, er
 	curStart, _ := cache.ParseMonth(curWin.Window.Start)
 	curEnd, _ := cache.ParseMonth(curWin.Window.End)
 
-	devs := buildDevWindows(data, opts.Profile.Devs, opts.Profile.Scoring.EffectiveExcludes(), curStart, curEnd, backfillStart, current, ci, norm)
+	devs := buildDevWindows(data, opts.Profile.Devs, opts.Profile.Scoring.EffectiveExcludes(), opts.Profile.Scoring.ExcludedRoles, curStart, curEnd, backfillStart, current, ci, norm)
 	applyCodeImpactCap(devs, ci)
 	devs = computeContributorScores(devs, opts.Profile.Scoring.Weights, norm)
 	return devs, curWin, nil

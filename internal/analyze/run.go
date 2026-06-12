@@ -37,6 +37,12 @@ type Options struct {
 	Profile config.Profile
 	Now     time.Time
 	Rebuild bool
+	// NoPersist skips the ratings.json write at the end of Run, leaving Run a
+	// pure read-only computation. Used by read-only audit tooling that wants
+	// the full assembled Result (composite + Elo + Spearman) without mutating
+	// live rating history. Combine with Rebuild to walk every period in-memory
+	// from a clean slate.
+	NoPersist bool
 	// Store is the cache backend to read records + manifest from. Nil defaults
 	// to the JSON store, so existing callers and tests are unaffected.
 	Store cache.Store
@@ -89,7 +95,7 @@ func Run(opts Options) (*Result, error) {
 
 	curStart, _ := cache.ParseMonth(curWin.Window.Start)
 	curEnd, _ := cache.ParseMonth(curWin.Window.End)
-	devs := buildDevWindows(data, opts.Profile.Devs, opts.Profile.Scoring.EffectiveExcludes(), curStart, curEnd, backfillStart, current, ci, norm)
+	devs := buildDevWindows(data, opts.Profile.Devs, opts.Profile.Scoring.EffectiveExcludes(), opts.Profile.Scoring.ExcludedRoles, curStart, curEnd, backfillStart, current, ci, norm)
 	applyCodeImpactCap(devs, ci)
 	devs = attachProjectShares(devs, buildProjectShares(data, projects, ci))
 	devs = computeContributorScores(devs, opts.Profile.Scoring.Weights, norm)
@@ -115,7 +121,7 @@ func Run(opts Options) (*Result, error) {
 	excludes := opts.Profile.Scoring.EffectiveExcludes()
 	scoringDevs := make([]config.DevIdentity, 0, len(opts.Profile.Devs))
 	for _, d := range opts.Profile.Devs {
-		if devExcluded(d, excludes) {
+		if devExcluded(d, excludes) || config.RoleExcluded(d.EffectiveRole(), opts.Profile.Scoring.ExcludedRoles) {
 			continue
 		}
 		scoringDevs = append(scoringDevs, d)
@@ -130,8 +136,10 @@ func Run(opts Options) (*Result, error) {
 	if _, err := advanceRatings(ratings, scoringDevs, data, eloStart, current, opts.Profile.Scoring, opts.Now); err != nil {
 		return nil, fmt.Errorf("advance ratings: %w", err)
 	}
-	if err := cache.SaveRatings(ratings); err != nil {
-		return nil, fmt.Errorf("save ratings: %w", err)
+	if !opts.NoPersist {
+		if err := cache.SaveRatings(ratings); err != nil {
+			return nil, fmt.Errorf("save ratings: %w", err)
+		}
 	}
 	devs = attachRatings(devs, ratings.Devs, opts.Profile.Scoring)
 

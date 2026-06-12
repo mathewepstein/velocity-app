@@ -264,12 +264,60 @@ func TestMatchesGitHubLoginFallsBackToLegacyField(t *testing.T) {
 
 func TestAllGitHubLoginsPrefersPluralOverSingular(t *testing.T) {
 	d := DevIdentity{
-		GitHubLogin:  "legacy",                  // legacy should be ignored
-		GitHubLogins: []string{"alice", "ali"},  // plural wins
+		GitHubLogin:  "legacy",                 // legacy should be ignored
+		GitHubLogins: []string{"alice", "ali"}, // plural wins
 	}
 	got := d.AllGitHubLogins()
 	want := []string{"alice", "ali"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("AllGitHubLogins() = %v, want %v", got, want)
+	}
+}
+
+func TestEffectiveRoleDefaultsToDev(t *testing.T) {
+	if got := (DevIdentity{}).EffectiveRole(); got != "dev" {
+		t.Errorf("empty role = %q, want dev", got)
+	}
+	if got := (DevIdentity{Role: " QA "}).EffectiveRole(); got != "qa" {
+		t.Errorf("trim/lower role = %q, want qa", got)
+	}
+}
+
+func TestRoleExcluded(t *testing.T) {
+	ex := []string{"qa", "exec", "excluded"}
+	for _, r := range []string{"qa", "QA", "exec", "excluded"} {
+		if !RoleExcluded(r, ex) {
+			t.Errorf("RoleExcluded(%q) = false, want true", r)
+		}
+	}
+	for _, r := range []string{"dev", "lead", "devops", ""} {
+		if RoleExcluded(r, ex) {
+			t.Errorf("RoleExcluded(%q) = true, want false", r)
+		}
+	}
+}
+
+func TestApplyDefaultsFillsExcludedRoles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := writeFile(t, path, `
+[profiles.default]
+name = "default"
+
+  [profiles.default.jira]
+  base_url = "https://x.atlassian.net"
+  email = "a@b"
+`); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(EnvPathOverride, path)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cfg.ActiveProfile().Scoring.ExcludedRoles
+	want := []string{"qa", "exec", "excluded"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ExcludedRoles = %v, want %v", got, want)
 	}
 }

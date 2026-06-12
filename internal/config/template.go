@@ -94,13 +94,14 @@ name = "default"
     # zero a weight to remove its contribution. Keys not listed fall back to the
     # built-in defaults below.
     prs_merged           = 3.0
-    jira_issues_resolved = 2.0
+    jira_issues_resolved = 1.5   # assignee-only (B1); leans on the more actor-correct code signals
     code_impact          = 1.5   # see [scoring.code_impact] for the formula
     prs_reviewed         = 1.0
     prs_created          = 0.5
-    jira_issues_touched  = 0.5
+    jira_issues_progressed = 0.5  # distinct issues the dev advanced through the build pipeline (dev-authored changelog transitions)
     active_weeks         = 0.5
     story_points         = 0.5
+    jira_issues_created  = 0.25  # planning credit: reporter-attributed, sqrt-saturated so filing volume can't be farmed
     loc_changed          = 0.25  # already p95-capped + sqrt-dampened at analyze time
 
     [profiles.default.scoring.code_impact]

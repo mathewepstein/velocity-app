@@ -61,6 +61,106 @@ func TestFilterForDevAttributesByIdentity(t *testing.T) {
 	}
 }
 
+func TestDevProgressedIssuesActorAndPipelineGated(t *testing.T) {
+	win := func(tt time.Time) bool {
+		return !tt.Before(mustTime("2026-03-01T00:00:00Z")) && !tt.After(mustTime("2026-03-31T23:59:59Z"))
+	}
+	tr := func(author, to, at string) cache.StatusTransition {
+		return cache.StatusTransition{Author: author, To: to, Field: "status", At: mustTime(at)}
+	}
+	data := &Loaded{
+		Issues: []cache.JiraIssue{
+			// dev advanced into In Progress (rank 1) in-window → counts.
+			{Key: "CD-1", Changelog: []cache.StatusTransition{tr("acct-dev", "In Progress", "2026-03-05T00:00:00Z")}},
+			// dev moved to Code Review (rank 2) + Ready QA (rank 3) — same issue → distinct=1.
+			{Key: "CD-2", Changelog: []cache.StatusTransition{
+				tr("acct-dev", "Code Review", "2026-03-06T00:00:00Z"),
+				tr("acct-dev", "Ready QA", "2026-03-07T00:00:00Z"),
+			}},
+			// dev moved it to In QA (rank 4 = QA pickup) → excluded.
+			{Key: "CD-3", Changelog: []cache.StatusTransition{tr("acct-dev", "In QA", "2026-03-08T00:00:00Z")}},
+			// dev closed it (rank 5) → excluded (resolution is its own signal).
+			{Key: "CD-4", Changelog: []cache.StatusTransition{tr("acct-dev", "Done", "2026-03-09T00:00:00Z")}},
+			// dev moved to backlog/triage (rank 0) → excluded.
+			{Key: "CD-5", Changelog: []cache.StatusTransition{tr("acct-dev", "Selected for Development", "2026-03-10T00:00:00Z")}},
+			// SOMEONE ELSE advanced it → not attributed to dev.
+			{Key: "CD-6", Changelog: []cache.StatusTransition{tr("acct-other", "In Progress", "2026-03-11T00:00:00Z")}},
+			// dev advanced it but OUT of window → excluded.
+			{Key: "CD-7", Changelog: []cache.StatusTransition{tr("acct-dev", "In Progress", "2026-02-15T00:00:00Z")}},
+		},
+	}
+	dev := config.DevIdentity{JiraAccountID: "acct-dev"}
+	got := devProgressedIssues(data, dev, win)
+	if got != 2 {
+		t.Errorf("devProgressedIssues = %d, want 2 (CD-1 + CD-2 only)", got)
+	}
+	// Jira-only-stub guard: empty accountId → 0.
+	if n := devProgressedIssues(data, config.DevIdentity{}, win); n != 0 {
+		t.Errorf("empty identity should progress 0 issues, got %d", n)
+	}
+}
+
+func TestDevCreatedIssuesReporterAttributed(t *testing.T) {
+	win := func(tt time.Time) bool {
+		return !tt.Before(mustTime("2026-03-01T00:00:00Z")) && !tt.After(mustTime("2026-03-31T23:59:59Z"))
+	}
+	data := &Loaded{
+		Issues: []cache.JiraIssue{
+			// dev filed it (reporter) in-window → counts.
+			{Key: "CD-1", Reporter: "acct-dev", Assignee: "acct-other", Created: mustTime("2026-03-05T00:00:00Z")},
+			// dev is assignee but NOT reporter → not their planning credit.
+			{Key: "CD-2", Reporter: "acct-other", Assignee: "acct-dev", Created: mustTime("2026-03-06T00:00:00Z")},
+			// dev filed it but OUT of window → excluded.
+			{Key: "CD-3", Reporter: "acct-dev", Created: mustTime("2026-02-01T00:00:00Z")},
+			// dev filed another in-window → counts.
+			{Key: "CD-4", Reporter: "acct-dev", Created: mustTime("2026-03-20T00:00:00Z")},
+		},
+	}
+	dev := config.DevIdentity{JiraAccountID: "acct-dev"}
+	if got := devCreatedIssues(data, dev, win); got != 2 {
+		t.Errorf("devCreatedIssues = %d, want 2 (CD-1 + CD-4, reporter-attributed, in-window)", got)
+	}
+	if n := devCreatedIssues(data, config.DevIdentity{}, win); n != 0 {
+		t.Errorf("empty identity should create 0, got %d", n)
+	}
+}
+
+func TestFilterForDevResolutionIsAssigneeOnly(t *testing.T) {
+	// B1/B3: a reporter-only issue still counts toward touched/created, but its
+	// resolution (and the SP riding it) must not be credited to the reporter.
+	data := &Loaded{
+		Months: cache.MonthsInRange(cache.MustParseMonth("2026-01"), cache.MustParseMonth("2026-03")),
+		Issues: []cache.JiraIssue{
+			// carol reported but stranger is the assignee + resolver.
+			{Key: "CD-10", Assignee: "acct-stranger", Reporter: "acct-carol",
+				Created: mustTime("2026-01-05T00:00:00Z"), Updated: mustTime("2026-01-10T00:00:00Z"),
+				Resolved: ptrTime(mustTime("2026-02-01T00:00:00Z")), StoryPoints: 8},
+			// carol both reported and is assignee — she keeps this resolution.
+			{Key: "CD-11", Assignee: "acct-carol", Reporter: "acct-carol",
+				Created: mustTime("2026-01-06T00:00:00Z"), Updated: mustTime("2026-01-11T00:00:00Z"),
+				Resolved: ptrTime(mustTime("2026-02-02T00:00:00Z")), StoryPoints: 5},
+		},
+	}
+	carol := config.DevIdentity{JiraAccountID: "acct-carol"}
+
+	got := filterForDev(data, carol)
+	if len(got.Issues) != 2 {
+		t.Fatalf("carol should see both issues (reporter + assignee), got %d", len(got.Issues))
+	}
+	byKey := map[string]cache.JiraIssue{}
+	for _, iss := range got.Issues {
+		byKey[iss.Key] = iss
+	}
+	// Reporter-only issue: Resolved cleared so the rollup can't credit it.
+	if byKey["CD-10"].Resolved != nil {
+		t.Errorf("CD-10 (reporter-only) Resolved should be cleared, got %v", byKey["CD-10"].Resolved)
+	}
+	// Assignee issue: resolution preserved.
+	if byKey["CD-11"].Resolved == nil {
+		t.Errorf("CD-11 (assignee) Resolved should be preserved")
+	}
+}
+
 func TestBuildDevWindowsSplitsAcrossDevsPlusUnknown(t *testing.T) {
 	data := twoDevDataset()
 	devs := []config.DevIdentity{
@@ -70,7 +170,7 @@ func TestBuildDevWindowsSplitsAcrossDevsPlusUnknown(t *testing.T) {
 	start := cache.MustParseMonth("2026-01")
 	end := cache.MustParseMonth("2026-04")
 
-	got := buildDevWindows(data, devs, nil, start, end, start, end, testCI(), testNorm())
+	got := buildDevWindows(data, devs, nil, nil,start, end, start, end, testCI(), testNorm())
 	if len(got) != 3 {
 		t.Fatalf("expected 3 buckets (alice, bob, unknown), got %d", len(got))
 	}
@@ -133,7 +233,7 @@ func TestBuildDevWindowsOmitsUnknownWhenEmpty(t *testing.T) {
 	devs := []config.DevIdentity{
 		{GitHubLogin: "alice", DisplayName: "Alice"},
 	}
-	got := buildDevWindows(data, devs, nil, cache.MustParseMonth("2026-01"), cache.MustParseMonth("2026-01"), cache.MustParseMonth("2026-01"), cache.MustParseMonth("2026-01"), testCI(), testNorm())
+	got := buildDevWindows(data, devs, nil, nil,cache.MustParseMonth("2026-01"), cache.MustParseMonth("2026-01"), cache.MustParseMonth("2026-01"), cache.MustParseMonth("2026-01"), testCI(), testNorm())
 	if len(got) != 1 {
 		t.Errorf("expected 1 bucket (no unknown), got %d", len(got))
 	}
@@ -152,7 +252,7 @@ func TestBuildDevWindowsDropsExcludedAuthorsFromUnknown(t *testing.T) {
 	start := cache.MustParseMonth("2026-01")
 	end := cache.MustParseMonth("2026-04")
 
-	got := buildDevWindows(data, devs, excludes, start, end, start, end, testCI(), testNorm())
+	got := buildDevWindows(data, devs, excludes, nil,start, end, start, end, testCI(), testNorm())
 
 	var unknown *DevWindowMetrics
 	for i := range got {
@@ -186,7 +286,7 @@ func TestBuildDevWindowsSkipsExcludedDev(t *testing.T) {
 	start := cache.MustParseMonth("2026-01")
 	end := cache.MustParseMonth("2026-04")
 
-	got := buildDevWindows(data, devs, excludes, start, end, start, end, testCI(), testNorm())
+	got := buildDevWindows(data, devs, excludes, nil,start, end, start, end, testCI(), testNorm())
 
 	for _, d := range got {
 		if d.Dev.DisplayName == "Bob" {

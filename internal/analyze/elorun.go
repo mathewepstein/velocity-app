@@ -42,14 +42,24 @@ func periodTotals(data *Loaded, id config.DevIdentity, start, end time.Time) Tot
 				t.JiraIssuesTouched++
 				weeksSeen[isoWeek(iss.Updated)] = struct{}{}
 			}
-			if inRange(iss.Created, start, end) {
-				t.JiraIssuesCreated++
-			}
-			if iss.Resolved != nil && inRange(*iss.Resolved, start, end) {
+			// JiraIssuesCreated is set reporter-attributed below (B5), not here.
+			// B1: resolution is assignee-only — the reporter filed it, the
+			// assignee did the work. Shares resolvedCreditedTo with the
+			// composite path so the two can't drift.
+			if resolvedCreditedTo(iss, id) && iss.Resolved != nil && inRange(*iss.Resolved, start, end) {
 				t.JiraIssuesResolved++
 			}
 		}
 		t.ActiveWeeks += len(weeksSeen)
+		// B2: scored Jira-progress signal (replaces touched). Dev-authored,
+		// actor-attributed; can't be inherited.
+		t.JiraIssuesProgressed = devProgressedIssues(data, id, func(tt time.Time) bool {
+			return inRange(tt, start, end)
+		})
+		// B5: planning credit — reporter-attributed distinct issues filed.
+		t.JiraIssuesCreated = devCreatedIssues(data, id, func(tt time.Time) bool {
+			return inRange(tt, start, end)
+		})
 	}
 
 	logins := id.AllGitHubLogins()
@@ -121,12 +131,21 @@ func inRange(t, start, end time.Time) bool {
 	return true
 }
 
-// hasAnyActivity reports whether a Totals has at least one non-zero field
-// across the metrics that contribute to scoring. Used to decide which devs
-// "played" a given period — silent / idle devs sit out and their rating
-// stays put.
+// hasAnyActivity reports whether a Totals carries at least one GH-actor signal
+// (authored PRs, merges, reviews, or commits). Used to decide which devs
+// "played" a given period — silent / idle devs sit out and their rating stays
+// put.
+//
+// Jira signals are deliberately excluded (A). They attribute a ticket's
+// current assignee/reporter against the ticket's historical timestamps, so a
+// dev inherits the full footprint of every ticket they now own — manufacturing
+// phantom pre-onset periods (a new hire "plays" periods before they wrote a
+// line). Only GH signals are actor-attributed against the event's own time and
+// cannot be inherited, so participation gates on them alone. Reviews stay in so
+// non-coding leads still play every period they review in. Jira still feeds the
+// composite score within periods a dev was independently GH-active.
 func hasAnyActivity(t Totals) bool {
-	return t.PRsCreated+t.PRsMerged+t.PRsReviewed+t.Commits+t.JiraIssuesTouched+t.JiraIssuesCreated+t.JiraIssuesResolved > 0
+	return t.PRsCreated+t.PRsMerged+t.PRsReviewed+t.Commits > 0
 }
 
 // applyEloPeriod runs one period's Elo update against the in-memory state.
@@ -155,9 +174,9 @@ func applyEloPeriod(
 
 	// 1. Build per-dev Totals + collect active devs.
 	type active struct {
-		idx  int // index into devs
-		key  string
-		t    Totals
+		idx int // index into devs
+		key string
+		t   Totals
 	}
 	var actives []active
 	for i, id := range devs {
@@ -184,20 +203,27 @@ func applyEloPeriod(
 	}
 	mini = computeContributorScores(mini, scoring.Weights, scoring.Normalize)
 
-	// 3. Normalize the period's totals to (0, 1) via logistic-of-z → actual.
-	// Replaces min-max in Phase 7 — min-max collapses mid-pack devs to ~0
-	// whenever there's a dominant outlier in the cohort, which then drains
-	// their rating even when they're producing perfectly reasonable work.
+	// 3. Period outcome = an averaged margin-scaled round-robin on the output
+	// axis (Phase 4, C3). S_i is dev i's mean pairwise game result vs the
+	// active field, scaled by the period's score spread. This replaces
+	// logisticZ(score): there is no ~0.73 cap, so a dev who out-produces the
+	// whole field reaches S≈1 and keeps climbing (fixes the flatten-top
+	// plateau), and a dominant ~2σ period lands at ~0.85-0.9 by construction
+	// (folds in C2). scale→0 (uniform period) ⇒ all draws.
 	scores := make([]float64, len(mini))
 	for i, m := range mini {
 		if m.Score != nil {
 			scores[i] = m.Score.Total
 		}
 	}
-	actuals := logisticZ(scores)
+	sd := stdevPop(scores)
+	scale := scoring.EloMarginScale * sd
+	band := scoring.EloMarginDeadzone * sd
+	actuals := roundRobinScore(scores, scale, band)
 
-	// 4. Team mean rating, computed from the active subset's current R
-	// (defaulting to the starting rating for first-time devs).
+	// 4. Each active dev's current rating (defaulting to the starting rating
+	// for first-time devs). teamMean is retained only for the idle-decay pull
+	// below; the Elo update no longer uses it.
 	var sumR float64
 	currentR := make([]float64, len(actives))
 	for i, a := range actives {
@@ -209,6 +235,10 @@ func applyEloPeriod(
 		sumR += r
 	}
 	teamMean := sumR / float64(len(actives))
+	// E_i: averaged pairwise expected score against the real field (each peer
+	// at their actual current rating), replacing the single shifting-teamMean
+	// opponent — a durable standing, and a strong cohort is genuinely harder.
+	expecteds := roundRobinExpected(currentR)
 
 	// 5. Apply per-dev Elo update, persist history snapshot.
 	activeKeys := make(map[string]bool, len(actives))
@@ -219,7 +249,8 @@ func applyEloPeriod(
 			entry.Current = eloStartingRating
 		}
 		k := eloKFactor(entry.PeriodsPlayed, scoring.KTiers)
-		newR, delta := updateElo(currentR[i], teamMean, actuals[i], k)
+		delta := float64(k) * (actuals[i] - expecteds[i])
+		newR := currentR[i] + delta
 		entry.Current = newR
 		entry.PeriodsPlayed++
 		entry.IdleStreak = 0

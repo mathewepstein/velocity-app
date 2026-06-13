@@ -354,10 +354,19 @@ type ScoringConfig struct {
 	// makes the curve steep just past the band, so genuine over-performers
 	// stretch away from the field. Validated against the live cohort
 	// (Phase-4 redesign): widest top-to-#2 gap with the lowest mid-pack spread.
-	EloMarginScale    float64  `toml:"elo_margin_scale"`
-	EloMarginDeadzone float64  `toml:"elo_margin_deadzone"`
-	PeriodWeeks       int      `toml:"period_weeks"`
-	Exclude           []string `toml:"exclude"`
+	EloMarginScale    float64 `toml:"elo_margin_scale"`
+	EloMarginDeadzone float64 `toml:"elo_margin_deadzone"`
+	// ProvisionalLossFactor softens the *downside* of an Elo period for a dev
+	// who is still provisional (PeriodsPlayed < ProvisionalUntilPeriods). A
+	// losing period's negative delta is scaled by this factor; gains are left
+	// at full rate. New devs are ramping up on the codebase, so a weak early
+	// period shouldn't tank them — but they can still climb to their true level
+	// unhindered. Range (0,1]: 0.5 (default) halves early losses; 1.0 disables
+	// the softening. Zero-value / out-of-range fills from the default in
+	// applyDefaults.
+	ProvisionalLossFactor float64  `toml:"provisional_loss_factor"`
+	PeriodWeeks           int      `toml:"period_weeks"`
+	Exclude               []string `toml:"exclude"`
 	// ExcludedRoles lists DevIdentity.Role values that are dropped from the
 	// leaderboard (composite + Elo). Default ["qa","exec","excluded"]. Role
 	// matching is case-insensitive. This is the org-portable replacement for
@@ -725,6 +734,7 @@ func DefaultScoringConfig() ScoringConfig {
 		ProvisionalUntilPeriods: 12,
 		EloMarginScale:          0.5,
 		EloMarginDeadzone:       0.75,
+		ProvisionalLossFactor:   0.5,
 		ExcludedRoles:           []string{"qa", "exec", "excluded"},
 		PeriodWeeks:             2,
 	}
@@ -1038,6 +1048,12 @@ func (c *Config) applyDefaults() {
 	}
 	if p.Scoring.EloMarginDeadzone == 0 {
 		p.Scoring.EloMarginDeadzone = defaults.Scoring.EloMarginDeadzone
+	}
+	// Out-of-range (incl. zero-value) falls back to the default. Disabling is
+	// done by setting 1.0 (loss × 1 = unchanged), not 0 — a 0 factor (full
+	// loss immunity) is intentionally unreachable via config.
+	if p.Scoring.ProvisionalLossFactor <= 0 || p.Scoring.ProvisionalLossFactor > 1 {
+		p.Scoring.ProvisionalLossFactor = defaults.Scoring.ProvisionalLossFactor
 	}
 	if p.Scoring.ExcludedRoles == nil {
 		p.Scoring.ExcludedRoles = defaults.Scoring.ExcludedRoles

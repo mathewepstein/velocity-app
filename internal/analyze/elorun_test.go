@@ -1,6 +1,7 @@
 package analyze
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -213,6 +214,84 @@ func TestApplyEloPeriodRewardsTopAndPenalizesBottom(t *testing.T) {
 	deltaSum := alice.History[0].Delta + bob.History[0].Delta
 	if deltaSum < -1e-6 || deltaSum > 1e-6 {
 		t.Errorf("delta sum = %v, want ~0 for equal-K equal-mean pair", deltaSum)
+	}
+}
+
+func TestApplyEloPeriodDampensProvisionalLosses(t *testing.T) {
+	// Same 10-vs-1 PR setup as RewardsTopAndPenalizesBottom. Both devs are
+	// provisional (PeriodsPlayed 0 < ProvisionalUntilPeriods). Bob loses; his
+	// negative delta is scaled by ProvisionalLossFactor, and the forgiven mass
+	// is clawed back from the gainer (Alice) so the period stays pool-neutral.
+	// In this symmetric 2-dev pair both magnitudes end up scaled by the factor,
+	// and the deltas still sum to ~0 (no inflation).
+	period := "2024-P19"
+	pr := func(num int, author string, addn int) cache.GitHubPR {
+		return cache.GitHubPR{
+			Number: num, Author: author,
+			Created:   mustTime("2024-05-08T00:00:00Z"),
+			Merged:    ptrTime(mustTime("2024-05-10T00:00:00Z")),
+			Additions: addn,
+		}
+	}
+	buildData := func() *Loaded {
+		d := &Loaded{}
+		for i := 0; i < 10; i++ {
+			d.PRs = append(d.PRs, pr(100+i, "alice", 50))
+		}
+		d.PRs = append(d.PRs, pr(200, "bob", 50))
+		return d
+	}
+	devs := []config.DevIdentity{
+		{GitHubLogins: []string{"alice"}, DisplayName: "Alice"},
+		{GitHubLogins: []string{"bob"}, DisplayName: "Bob"},
+	}
+	run := func(factor float64) (aliceDelta, bobDelta float64) {
+		state := map[string]cache.DevRatingState{}
+		scoring := config.ScoringConfig{
+			KTiers:                  []config.KTier{{MinPeriods: 0, K: 32}},
+			Weights:                 map[string]float64{"prs_merged": 3.0},
+			EloMarginScale:          1.0,
+			ProvisionalUntilPeriods: 12,
+			ProvisionalLossFactor:   factor,
+		}
+		if err := applyEloPeriod(state, devs, buildData(), period, scoring); err != nil {
+			t.Fatalf("applyEloPeriod(factor=%v): %v", factor, err)
+		}
+		return state["gh:alice"].History[0].Delta, state["gh:bob"].History[0].Delta
+	}
+
+	aliceFull, bobFull := run(1.0) // control: softening disabled
+	aliceDamp, bobDamp := run(0.5) // soften provisional losses, claw back from gainers
+
+	if bobFull >= 0 {
+		t.Fatalf("control: Bob should lose, got delta %v", bobFull)
+	}
+	if aliceFull <= 0 {
+		t.Fatalf("control: Alice should gain, got delta %v", aliceFull)
+	}
+	// Control pair is zero-sum.
+	if math.Abs(aliceFull+bobFull) > 1e-9 {
+		t.Fatalf("control pair not zero-sum: %v + %v", aliceFull, bobFull)
+	}
+	// Headline invariant: softening stays POOL-NEUTRAL — the forgiven loss is
+	// reclaimed from the gainer, so the pair still sums to ~0 (no inflation).
+	if math.Abs(aliceDamp+bobDamp) > 1e-9 {
+		t.Errorf("softened pair not pool-neutral: %v + %v = %v (want ~0)", aliceDamp, bobDamp, aliceDamp+bobDamp)
+	}
+	// Bob's loss is softened by exactly the factor and is gentler.
+	if math.Abs(bobDamp-0.5*bobFull) > 1e-9 {
+		t.Errorf("Bob loss = %v, want half of control %v (= %v)", bobDamp, bobFull, 0.5*bobFull)
+	}
+	if bobDamp <= bobFull {
+		t.Errorf("dampened loss %v should be gentler than full loss %v", bobDamp, bobFull)
+	}
+	// Alice's gain is reduced relationally (the clawback funds Bob's relief),
+	// so the winner gains less rather than the cohort inflating.
+	if aliceDamp >= aliceFull {
+		t.Errorf("Alice gain %v should be reduced vs control %v by the clawback", aliceDamp, aliceFull)
+	}
+	if math.Abs(aliceDamp-0.5*aliceFull) > 1e-9 {
+		t.Errorf("Alice gain = %v, want half of control %v (= %v) in this symmetric pair", aliceDamp, aliceFull, 0.5*aliceFull)
 	}
 }
 

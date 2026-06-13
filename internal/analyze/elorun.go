@@ -240,7 +240,50 @@ func applyEloPeriod(
 	// opponent — a durable standing, and a strong cohort is genuinely harder.
 	expecteds := roundRobinExpected(currentR)
 
-	// 5. Apply per-dev Elo update, persist history snapshot.
+	// 5. Per-dev Elo delta, computed pool-neutrally so the provisional
+	// loss-softening doesn't inflate the cohort.
+	//
+	// The raw round-robin signal sums to ~0 across the period (Σ(S−E)=0; only
+	// the per-dev K-tier introduces a tiny wobble), so rating mass is a shared
+	// pool. Softening a provisional dev's loss in isolation would mint that
+	// forgiven mass out of nothing → every rating drifts up. Instead we measure
+	// the mass we forgive on the loss side and claw it back from the period's
+	// GAINERS, in proportion to each one's gain: the points a learner doesn't
+	// lose come out of the winners' gains, not the pool. Net effect — provisional
+	// devs lose less AND the field gains a little less, so learners are protected
+	// *relative* to the cohort while the period stays balanced (no inflation).
+	deltas := make([]float64, len(actives))
+	var forgiven, gainSum float64
+	for i, a := range actives {
+		entry := state[a.key]
+		pp := entry.PeriodsPlayed
+		k := eloKFactor(pp, scoring.KTiers)
+		raw := float64(k) * (actuals[i] - expecteds[i])
+		d := raw
+		// Provisional devs carry the highest K, so without this they'd fall
+		// fastest. Soften only the downside; pp is the count BEFORE this period,
+		// matching attachRatings' provisional flag (< ProvisionalUntilPeriods).
+		if raw < 0 && scoring.ProvisionalLossFactor > 0 && pp < scoring.ProvisionalUntilPeriods {
+			d = raw * scoring.ProvisionalLossFactor
+			forgiven += d - raw // = (1−f)·|raw| > 0: the loss we didn't take
+		}
+		deltas[i] = d
+		if d > 0 {
+			gainSum += d
+		}
+	}
+	// Reclaim the forgiven mass from the gainers, proportional to each gain, so
+	// Σdelta is left at its pre-softening value. A degenerate all-loss/draw
+	// period has no gainers to rebalance against — the tiny residual is left.
+	if forgiven > 0 && gainSum > 0 {
+		for i := range deltas {
+			if deltas[i] > 0 {
+				deltas[i] -= forgiven * (deltas[i] / gainSum)
+			}
+		}
+	}
+
+	// Apply per-dev Elo update, persist history snapshot.
 	activeKeys := make(map[string]bool, len(actives))
 	for i, a := range actives {
 		activeKeys[a.key] = true
@@ -248,8 +291,7 @@ func applyEloPeriod(
 		if entry.Current == 0 {
 			entry.Current = eloStartingRating
 		}
-		k := eloKFactor(entry.PeriodsPlayed, scoring.KTiers)
-		delta := float64(k) * (actuals[i] - expecteds[i])
+		delta := deltas[i]
 		newR := currentR[i] + delta
 		entry.Current = newR
 		entry.PeriodsPlayed++

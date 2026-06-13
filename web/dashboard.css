@@ -1346,17 +1346,24 @@ footer {
 }
 
 .contrib-row .name {
+  display: flex;
+  align-items: center;
+  min-width: 0;
   color: var(--fg);
   font-weight: 500;
-  white-space: nowrap;
+}
+.contrib-row .name .name-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .contrib-row.provisional .name {
   color: var(--fg-subtle);
 }
 .contrib-row .name .provisional-badge {
   display: inline-block;
+  flex: 0 0 auto;
   margin-left: 8px;
   padding: 1px 6px;
   font-size: 10px;
@@ -1368,6 +1375,31 @@ footer {
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 3px;
   vertical-align: middle;
+}
+/* Role badges — tag the rarer lead / devops contributors next to the name.
+   Same mini-chip shape as the provisional badge, but colored per role so they
+   read as deliberately-kept-but-distinct from the pure-dev cohort. */
+.contrib-row .name .role-badge {
+  display: inline-block;
+  flex: 0 0 auto;
+  margin-left: 8px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 3px;
+  vertical-align: middle;
+}
+.contrib-row .name .role-badge.lead {
+  color: var(--overlay);
+  background: var(--overlay-soft);
+  border: 1px solid var(--overlay);
+}
+.contrib-row .name .role-badge.devops {
+  color: var(--success);
+  background: rgba(111, 210, 143, 0.16);
+  border: 1px solid var(--success);
 }
 .contrib-row .num {
   text-align: right;

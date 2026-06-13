@@ -1,11 +1,13 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Velocity — Leaderboard</title>
   <link rel="stylesheet" href="/dashboard.css" />
 </head>
+
 <body class="{{if .Incognito}}incognito{{end}}">
   {{template "nav" .}}
 
@@ -50,52 +52,54 @@
     <!-- Middle: composite-score legend -->
     <section class="panel legend-panel">
       <h2>How the score is built</h2>
-      <p class="legend-intro">
-        Each dev's <strong>composite score</strong> for the current window is a
-        weighted sum of z-scored metrics — every contribution is measured
-        against the rest of the active cohort, not against a fixed bar. Bigger
-        weight = bigger impact on rank.
-      </p>
+      <p class="legend-intro">Each dev's <strong>composite score</strong> for the current window is a weighted sum of
+        z-scored metrics — every contribution is measured against the rest of the active cohort, not against a fixed
+        bar. Bigger weight = bigger impact on rank.</p>
       <dl class="legend-list">
-        <div>
-          <dt>Bi-weekly Elo rating</dt>
-          <dd>Pairwise rating updates every two weeks: each dev's composite for the period defines a relative "result," and Elo moves their rating accordingly. K-factor tiers down as <em>periods played</em> grows, so short-tenured devs aren't punished by early swings. Provisional badge until they cross the configured periods threshold.</dd>
-        </div>
         <div>
           <dt>PRs merged <span class="weight">×3.0</span></dt>
           <dd>The headline shipping signal. A merged PR is the strongest evidence the work landed.</dd>
         </div>
         <div>
-          <dt>Issues resolved <span class="weight">×2.0</span></dt>
-          <dd>Tickets actually closed by this dev in the window — caps "merged a PR but ticket still open" gaming.</dd>
+          <dt>Issues resolved <span class="weight">×1.5</span></dt>
+          <dd>Tickets this dev was the <em>assignee</em> on and closed in the window.</dd>
         </div>
         <div>
           <dt>code_impact <span class="weight">×1.5</span></dt>
-          <dd>Substance-of-contribution composite: <code>sqrt(α·unique_files + β·loc_capped + γ·merged_prs)</code>. Combines breadth of files touched, lines changed (p95-capped), and shipping cadence into one depth-of-work number. Replaces raw commit counts in the score.</dd>
+          <dd>Substance-of-contribution composite: combines breadth of files touched, lines changed (capped), and
+            shipping cadence into one depth-of-work number.</dd>
         </div>
         <div>
           <dt>PR reviews <span class="weight">×1.0</span></dt>
-          <dd>Counts review submissions on others' PRs. Catches the reviewer-heavy devs who don't show up in raw output numbers.</dd>
+          <dd>Counts review submissions on others' PRs. Catches the reviewer-heavy devs who don't show up in raw output
+            numbers.</dd>
         </div>
         <div>
           <dt>PRs opened <span class="weight">×0.5</span></dt>
-          <dd>Created (not necessarily merged) — picks up devs whose work is mid-flight at the window cutoff.</dd>
+          <dd>Created — picks up devs whose work is mid-flight at the window cutoff.</dd>
         </div>
         <div>
-          <dt>Issues touched <span class="weight">×0.5</span></dt>
-          <dd>Any Jira activity on this dev's assigned tickets — surfacing engagement that hasn't crossed the "resolved" line yet.</dd>
+          <dt>Issues progressed <span class="weight">×0.5</span></dt>
+          <dd>Distinct tickets this dev personally advanced through the build pipeline (In Progress → Code Review →
+            Ready for QA) via status change.</dd>
         </div>
         <div>
           <dt>Active weeks <span class="weight">×0.5</span></dt>
-          <dd>Distinct calendar weeks with at least one signal. Spreads credit across consistency, not just intensity.</dd>
+          <dd>Distinct calendar weeks with at least one signal. Spreads credit across consistency, not just intensity.
+          </dd>
         </div>
         <div>
           <dt>Story points <span class="weight">×0.5</span></dt>
           <dd>Sum of completed Jira story points — proxy for sized effort when teams use pointing.</dd>
         </div>
         <div>
+          <dt>Issues filed <span class="weight">×0.25</span></dt>
+          <dd>Tickets this dev reported - credits that planning <em>happened</em> without rewarding raw ticket volume.
+          </dd>
+        </div>
+        <div>
           <dt>LoC changed <span class="weight">×0.25</span></dt>
-          <dd>Added + deleted, p95-capped and sqrt-dampened so one giant refactor week doesn't dwarf everyone.</dd>
+          <dd>Added + deleted, capped and dampened so one giant refactor week doesn't dwarf everyone.</dd>
         </div>
       </dl>
     </section>
@@ -158,4 +162,5 @@
   <script src="/charts.js" defer></script>
   <script src="/leaderboard.js" defer></script>
 </body>
+
 </html>

@@ -46,12 +46,19 @@ func warnIfNoRoster(w io.Writer, profile config.Profile) {
 // Sentinel selections used in the interactive prompt list. Survey returns the
 // raw option string; these constants keep the branch logic readable.
 const (
-	choiceSkip          = "[skip — leave unmapped]"
-	choiceJiraOnly      = "[map as Jira-only entry (no GitHub login)]"
-	choiceGitHubOnly    = "[keep GitHub login only (no Jira accountId)]"
-	choiceBrowseAll     = "[browse all Jira users — type to filter]"
+	choiceSkip           = "[skip — leave unmapped]"
+	choiceJiraOnly       = "[map as Jira-only entry (no GitHub login)]"
+	choiceGitHubOnly     = "[keep GitHub login only (no Jira accountId)]"
+	choiceBrowseAll      = "[browse all Jira users — type to filter]"
 	choiceAttachExisting = "[attach to already-mapped person...]"
 )
+
+// roleChoices lists the selectable DevIdentity roles in the discover wizard,
+// dev first (the default). qa/exec/excluded come off the leaderboard via
+// Scoring.ExcludedRoles; lead/devops stay on the board but carry the tag for
+// UI highlighting. Capturing the role at discover time means no hand-editing
+// config.toml afterwards.
+var roleChoices = []string{"dev", "lead", "devops", "qa", "exec", "excluded"}
 
 func devsDiscoverCmd() *cobra.Command {
 	var (
@@ -144,6 +151,16 @@ require per-pair confirmation.`,
 				return nil
 			}
 
+			// Classify each newly-discovered contributor's role at capture
+			// time (programmatic, not hand-edited config.toml). Skipped under
+			// --apply-all so a non-interactive run stays prompt-free; those
+			// entries default to "dev".
+			if !applyAll {
+				if err := assignNewDevRoles(out, profile.Devs, pending); err != nil {
+					return err
+				}
+			}
+
 			p := cfg.ActiveProfile()
 			merged, extended, appended := mergePending(p.Devs, pending)
 
@@ -162,8 +179,8 @@ require per-pair confirmation.`,
 							break
 						}
 					}
-					fmt.Fprintf(out, "  [%s]  github_logins=%-40s  jira_account_id=%-30q  display_name=%q\n",
-						action, logins, e.JiraAccountID, e.DisplayName)
+					fmt.Fprintf(out, "  [%s]  github_logins=%-40s  jira_account_id=%-30q  display_name=%-24q  role=%s\n",
+						action, logins, e.JiraAccountID, e.DisplayName, e.EffectiveRole())
 				}
 				return nil
 			}
@@ -216,6 +233,69 @@ func proposeSelfPair(ctx context.Context, out io.Writer, profile config.Profile,
 		JiraAccountID: selfJira,
 		DisplayName:   displayName,
 	}, nil
+}
+
+// assignNewDevRoles prompts for a role on each genuinely-new pending entry and
+// records it on the entry in place. Entries that extend an already-mapped
+// person (their jira_account_id is already in [[devs]]) are skipped — that
+// person's role is already set, and attaching another GitHub identifier
+// shouldn't re-ask. Anything with no jira_account_id (GitHub-only) is always
+// treated as new. Leaving role unset is fine: EffectiveRole defaults to "dev".
+func assignNewDevRoles(out io.Writer, existing, pending []config.DevIdentity) error {
+	existingJira := map[string]struct{}{}
+	for _, d := range existing {
+		if d.JiraAccountID != "" {
+			existingJira[d.JiraAccountID] = struct{}{}
+		}
+	}
+	isExtension := func(e config.DevIdentity) bool {
+		if e.JiraAccountID == "" {
+			return false
+		}
+		_, ok := existingJira[e.JiraAccountID]
+		return ok
+	}
+
+	newCount := 0
+	for _, e := range pending {
+		if !isExtension(e) {
+			newCount++
+		}
+	}
+	if newCount == 0 {
+		return nil
+	}
+
+	fmt.Fprintf(out, "\nClassify %d new contributor%s (qa/exec/excluded come off the leaderboard; lead/devops stay, tagged):\n",
+		newCount, pluralS(newCount))
+	for i := range pending {
+		if isExtension(pending[i]) {
+			continue
+		}
+		name := pending[i].DisplayName
+		if name == "" {
+			if logins := pending[i].AllGitHubLogins(); len(logins) > 0 {
+				name = logins[0]
+			} else {
+				name = pending[i].JiraAccountID
+			}
+		}
+		var role string
+		if err := survey.AskOne(&survey.Select{
+			Message:  fmt.Sprintf("Role for %s:", name),
+			Options:  roleChoices,
+			Default:  "dev",
+			PageSize: len(roleChoices),
+		}, &role); err != nil {
+			return err
+		}
+		// Store anything other than the default so config.toml stays terse
+		// (omitempty drops "" and EffectiveRole fills "dev" back in).
+		if role != "" && role != "dev" {
+			pending[i].Role = role
+		}
+	}
+	return nil
 }
 
 // proposeOrgWide runs the two-pass org-wide pairing flow. Pass 1 walks every

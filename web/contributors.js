@@ -164,8 +164,15 @@
     row.setAttribute('role', 'row');
     if (d.rating?.provisional) row.classList.add('provisional');
 
+    // Name cell is a flex row: the name text truncates while the badges stay
+    // visible (a plain text node + appended badge would be clipped by the
+    // cell's ellipsis overflow).
     const name = cell('', 'name');
-    name.textContent = d.dev.display_name;
+    const nameText = document.createElement('span');
+    nameText.className = 'name-text';
+    nameText.textContent = d.dev.display_name;
+    name.appendChild(nameText);
+    appendRoleBadge(name, d.dev.role);
     if (d.rating?.provisional) {
       const badge = document.createElement('span');
       badge.className = 'provisional-badge';
@@ -194,6 +201,23 @@
     if (cls) c.className = cls;
     if (text) c.textContent = text;
     return c;
+  }
+
+  // appendRoleBadge tags the rarer non-pure-dev contributors (lead / devops) so
+  // they read as deliberately-kept-but-distinct from the pure-dev cohort. Plain
+  // devs need no badge; qa/exec are already filtered off the board upstream
+  // (Scoring.ExcludedRoles), so they never reach a row here. Role defaults to
+  // 'dev' when config left it unset.
+  function appendRoleBadge(nameCell, role) {
+    const r = (role || 'dev').toLowerCase();
+    if (r !== 'lead' && r !== 'devops') return;
+    const badge = document.createElement('span');
+    badge.className = 'role-badge ' + r;
+    badge.textContent = r === 'lead' ? 'Lead' : 'DevOps';
+    badge.title = r === 'lead'
+      ? 'Team lead — kept on the board; value surfaces through reviews, coordination, and planning rather than raw code volume.'
+      : 'DevOps — kept on the board; a different work profile from feature devs.';
+    nameCell.appendChild(badge);
   }
 
   function numCell(value) {

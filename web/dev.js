@@ -26,9 +26,9 @@
     { key: 'code_impact',          label: 'Code impact', compute: r => Math.round(((r.code_impact ?? 0)) * 10) / 10 },
     { key: 'prs_merged',           label: 'PRs merged' },
     { key: 'prs_reviewed',         label: 'PR reviews' },
-    { key: 'jira_issues_resolved', label: 'Issues resolved' },
-    { key: 'jira_issues_touched',  label: 'Issues touched' },
-    { key: 'prs_created',          label: 'PRs opened' },
+    { key: 'jira_issues_resolved',   label: 'Issues resolved' },
+    { key: 'jira_issues_progressed', label: 'Issues progressed' },
+    { key: 'prs_created',            label: 'PRs opened' },
     { key: 'commits',              label: 'Commits' },
     { key: 'loc_changed',          label: 'LoC changed', compute: r => (r.loc_added || 0) + (r.loc_deleted || 0) },
   ];

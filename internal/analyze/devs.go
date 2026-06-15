@@ -61,6 +61,51 @@ func devProgressedIssues(data *Loaded, id config.DevIdentity, inWindow func(time
 	return len(seen)
 }
 
+// devProgressedByBucket returns, per time-bucket key (from bucketOf applied to
+// each transition's timestamp), the count of DISTINCT issues dev id personally
+// advanced into the build pipeline (workflowRank 1-3 via a dev-authored status
+// transition). Distinctness is per-bucket — an issue advanced in two different
+// months counts once in each — which is the right semantic for the per-month /
+// per-week history rows.
+//
+// This is the bucketed companion to devProgressedIssues: the rollup rows can't
+// reuse the window-total (its cross-window dedup means month counts wouldn't sum
+// back to it), and rollupMonthly/Weekly can't compute it themselves because
+// progress is actor-attributed (needs id + the full, unscoped changelog), not
+// derivable from the dev-scoped issue set. buildOneDev calls this once with
+// monthKey and once with isoWeek and assigns the results onto the rows.
+func devProgressedByBucket(data *Loaded, id config.DevIdentity, bucketOf func(time.Time) string) map[string]int {
+	if id.JiraAccountID == "" {
+		return nil
+	}
+	sets := map[string]map[string]struct{}{}
+	for _, iss := range data.Issues {
+		for _, tr := range iss.Changelog {
+			if tr.Author != id.JiraAccountID {
+				continue
+			}
+			if tr.Field != "" && tr.Field != "status" {
+				continue
+			}
+			if r := workflowRank(tr.To); r < 1 || r > 3 {
+				continue
+			}
+			b := bucketOf(tr.At)
+			s := sets[b]
+			if s == nil {
+				s = map[string]struct{}{}
+				sets[b] = s
+			}
+			s[iss.Key] = struct{}{}
+		}
+	}
+	out := make(map[string]int, len(sets))
+	for b, s := range sets {
+		out[b] = len(s)
+	}
+	return out
+}
+
 // devCreatedIssues counts DISTINCT issues dev id REPORTED (filed) with a
 // creation time passing inWindow. Reporter-attribution is correct here — the
 // reporter IS the author/planner — the mirror image of why it's wrong for
@@ -320,12 +365,26 @@ func buildOneDev(data *Loaded, id config.DevIdentity, start, end, fullStart, ful
 	}
 	monthly := rollupMonthly(scoped, start, end, ci)
 	weekly := rollupWeekly(scoped, start, end, ci)
+	// B2: populate the per-row scored Jira-progress signal. rollupMonthly/Weekly
+	// can't — progress is actor-attributed via the changelog (needs id + full,
+	// unscoped data), not derivable from the dev-scoped issue rollup. Bucketed
+	// here so the monthly/weekly history rows carry it (the window total below
+	// uses cross-window dedup and so can't be summed out of the rows).
+	progByMonth := devProgressedByBucket(data, id, monthKey)
+	for i := range monthly {
+		monthly[i].JiraIssuesProgressed = progByMonth[monthly[i].Month]
+	}
+	progByWeek := devProgressedByBucket(data, id, isoWeek)
+	for i := range weekly {
+		weekly[i].JiraIssuesProgressed = progByWeek[weekly[i].Week]
+	}
 	totals := totalsFromMonthly(monthly)
 	totals.ActiveWeeks = activeWeeksCount(weekly)
 	// B2: scored Jira-progress signal — distinct issues this dev personally
 	// advanced through the build pipeline in-window (dev-authored changelog
 	// transitions). Scans full data (not scoped) since it's actor-attributed,
-	// not ownership-attributed.
+	// not ownership-attributed. Authoritative window total (cross-month dedup),
+	// set after totalsFromMonthly so the per-row population above can't skew it.
 	totals.JiraIssuesProgressed = devProgressedIssues(data, id, func(t time.Time) bool {
 		return monthInRange(monthKey(t), start, end)
 	})
@@ -346,6 +405,11 @@ func buildOneDev(data *Loaded, id config.DevIdentity, start, end, fullStart, ful
 	var fullHistory []MonthlyRow
 	if fullStart.Before(start) || fullStart.Equal(start) {
 		fullHistory = rollupMonthly(scoped, fullStart, fullEnd, ci)
+		// progByMonth spans all of data (no window filter), so it covers the
+		// full-history months too.
+		for i := range fullHistory {
+			fullHistory[i].JiraIssuesProgressed = progByMonth[fullHistory[i].Month]
+		}
 	}
 	return DevWindowMetrics{
 		Dev:                id,

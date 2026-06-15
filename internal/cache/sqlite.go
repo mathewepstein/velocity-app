@@ -82,9 +82,61 @@ func openSQLiteStore(path string) (Store, error) {
 // against PRAGMA table_info). New columns must be nullable or carry a DEFAULT,
 // since existing rows get the default.
 func migrateSchema(db *sql.DB) error {
-	return addMissingColumns(db, "jira_issues", []columnDef{
+	if err := addMissingColumns(db, "jira_issues", []columnDef{
 		{"relations_fetched", "INTEGER NOT NULL DEFAULT 0"},
 		{"raw_fields_fetched", "INTEGER NOT NULL DEFAULT 0"},
+	}); err != nil {
+		return err
+	}
+	// github-corpus-capture-plan (2026-06-15): one-shot full-crawl field expansion.
+	if err := addMissingColumns(db, "github_prs", []columnDef{
+		{"base_branch", "TEXT"},
+		{"base_sha", "TEXT"},
+		{"head_sha", "TEXT"},
+		{"head_repo", "TEXT"},
+		{"base_repo", "TEXT"},
+		{"merged_by", "TEXT"},
+		{"commit_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"changed_files", "INTEGER NOT NULL DEFAULT 0"},
+		{"merge_commit_sha", "TEXT"},
+		{"draft", "INTEGER NOT NULL DEFAULT 0"},
+		{"auto_merge", "INTEGER NOT NULL DEFAULT 0"},
+		{"updated", "TEXT"},
+		{"author_association", "TEXT"},
+		{"commits_fetched", "INTEGER NOT NULL DEFAULT 0"},
+	}); err != nil {
+		return err
+	}
+	if err := addMissingColumns(db, "pr_file_changes", []columnDef{
+		{"previous_filename", "TEXT"},
+		{"blob_sha", "TEXT"},
+	}); err != nil {
+		return err
+	}
+	if err := addMissingColumns(db, "pr_review_comments", []columnDef{
+		{"comment_id", "INTEGER"},
+		{"review_id", "INTEGER"},
+		{"commit_id", "TEXT"},
+		{"line", "INTEGER"},
+		{"original_line", "INTEGER"},
+		{"updated", "TEXT"},
+		{"author_association", "TEXT"},
+	}); err != nil {
+		return err
+	}
+	if err := addMissingColumns(db, "github_reviews", []columnDef{
+		{"review_id", "INTEGER"},
+		{"body", "TEXT"},
+		{"commit_id", "TEXT"},
+		{"author_association", "TEXT"},
+	}); err != nil {
+		return err
+	}
+	return addMissingColumns(db, "github_commits", []columnDef{
+		{"authored", "TEXT"},
+		{"committer", "TEXT"},
+		{"parent_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"comment_count", "INTEGER NOT NULL DEFAULT 0"},
 	})
 }
 

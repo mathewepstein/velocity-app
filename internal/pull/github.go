@@ -117,17 +117,38 @@ func (p *GithubPuller) pullPRs(ctx context.Context, org string, m cache.Month) (
 		}
 
 		pr := cache.GitHubPR{
-			Number:    it.Number,
-			Repo:      repo,
-			Title:     it.Title,
-			Body:      it.Body,
-			State:     detail.stateLabel(),
-			Author:    it.User.Login,
-			Branch:    detail.Head.Ref,
-			Created:   it.CreatedAt,
-			Additions: detail.Additions,
-			Deletions: detail.Deletions,
-			IssueKeys: ExtractIssueKeys(it.Title, it.Body, detail.Head.Ref),
+			Number:             it.Number,
+			Repo:               repo,
+			Title:              it.Title,
+			Body:               it.Body,
+			State:              detail.stateLabel(),
+			Author:             it.User.Login,
+			Branch:             detail.Head.Ref,
+			Created:            it.CreatedAt,
+			Additions:          detail.Additions,
+			Deletions:          detail.Deletions,
+			IssueKeys:          ExtractIssueKeys(it.Title, it.Body, detail.Head.Ref),
+			BaseBranch:         detail.Base.Ref,
+			BaseSHA:            detail.Base.SHA,
+			HeadSHA:            detail.Head.SHA,
+			HeadRepo:           detail.Head.repoName(),
+			BaseRepo:           detail.Base.repoName(),
+			CommitCount:        detail.Commits,
+			ChangedFiles:       detail.ChangedFiles,
+			MergeCommitSHA:     detail.MergeCommit,
+			Draft:              detail.Draft,
+			AutoMerge:          detail.AutoMerge != nil,
+			AuthorAssociation:  detail.AuthorAssoc,
+			Labels:             ghLabelNames(detail.Labels),
+			Assignees:          ghUserLogins(detail.Assignees),
+			RequestedReviewers: ghUserLogins(detail.RequestedReviewers),
+		}
+		if detail.MergedBy != nil {
+			pr.MergedBy = detail.MergedBy.Login
+		}
+		if detail.UpdatedAt != nil {
+			t := detail.UpdatedAt.UTC()
+			pr.Updated = &t
 		}
 		if detail.MergedAt != nil {
 			t := detail.MergedAt.UTC()
@@ -149,6 +170,19 @@ func (p *GithubPuller) pullPRs(ctx context.Context, org string, m cache.Month) (
 				pr.Files = []string{}
 			default:
 				return nil, fmt.Errorf("files %s#%d: %w", repo, it.Number, err)
+			}
+
+			commits, err := p.FetchPRCommits(ctx, repo, it.Number)
+			switch {
+			case err == nil:
+				if commits == nil {
+					commits = []cache.PRCommit{}
+				}
+				pr.Commits = commits
+			case errors.Is(err, ErrPRUnreachable):
+				pr.Commits = []cache.PRCommit{}
+			default:
+				return nil, fmt.Errorf("commits %s#%d: %w", repo, it.Number, err)
 			}
 		}
 		out = append(out, pr)
@@ -264,11 +298,15 @@ func (p *GithubPuller) pullReviews(ctx context.Context, prs []cache.GitHubPR, m 
 				continue // pending reviews have no submission timestamp; skip.
 			}
 			all = append(all, cache.GitHubReview{
-				PRNumber:  pr.Number,
-				Repo:      pr.Repo,
-				Reviewer:  r.User.Login,
-				State:     r.State,
-				Submitted: r.SubmittedAt.UTC(),
+				PRNumber:          pr.Number,
+				Repo:              pr.Repo,
+				Reviewer:          r.User.Login,
+				State:             r.State,
+				Submitted:         r.SubmittedAt.UTC(),
+				ReviewID:          r.ID,
+				Body:              r.Body,
+				CommitID:          r.CommitID,
+				AuthorAssociation: r.AuthorAssoc,
 			})
 		}
 		if p.sleepBtwnPages > 0 {
@@ -331,14 +369,22 @@ func (p *GithubPuller) pullCommits(ctx context.Context, org string, m cache.Mont
 		if author == "" {
 			author = c.Commit.Author.Name
 		}
-		out = append(out, cache.GitHubCommit{
-			SHA:       c.SHA,
-			Repo:      repo,
-			Author:    author,
-			Message:   c.Commit.Message,
-			Committed: c.Commit.Committer.Date.UTC(),
-			IssueKeys: ExtractIssueKeys(c.Commit.Message),
-		})
+		gc := cache.GitHubCommit{
+			SHA:          c.SHA,
+			Repo:         repo,
+			Author:       author,
+			Message:      c.Commit.Message,
+			Committed:    c.Commit.Committer.Date.UTC(),
+			IssueKeys:    ExtractIssueKeys(c.Commit.Message),
+			Committer:    c.Committer.Login,
+			ParentCount:  len(c.Parents),
+			CommentCount: c.Commit.CommentCount,
+		}
+		if !c.Commit.Author.Date.IsZero() {
+			a := c.Commit.Author.Date.UTC()
+			gc.Authored = &a
+		}
+		out = append(out, gc)
 	}
 	return out, nil
 }
@@ -538,15 +584,85 @@ type ghSearchIssue struct {
 	} `json:"user"`
 }
 
+// Note: the richer PR metadata (labels, assignees, draft, base ref, counts,
+// merged_by, …) is read from the authoritative /pulls/{n} detail (ghPRDetail),
+// not the search row — the detail is fetched per-PR anyway and never diverges.
+
 type ghPRDetail struct {
-	State     string     `json:"state"`
-	Merged    bool       `json:"merged"`
-	MergedAt  *time.Time `json:"merged_at"`
-	Additions int        `json:"additions"`
-	Deletions int        `json:"deletions"`
-	Head      struct {
-		Ref string `json:"ref"`
-	} `json:"head"`
+	State        string     `json:"state"`
+	Merged       bool       `json:"merged"`
+	MergedAt     *time.Time `json:"merged_at"`
+	UpdatedAt    *time.Time `json:"updated_at"`
+	Additions    int        `json:"additions"`
+	Deletions    int        `json:"deletions"`
+	Commits      int        `json:"commits"`
+	ChangedFiles int        `json:"changed_files"`
+	Draft        bool       `json:"draft"`
+	MergeCommit  string     `json:"merge_commit_sha"`
+	AuthorAssoc  string     `json:"author_association"`
+	Head         ghPRRef    `json:"head"`
+	Base         ghPRRef    `json:"base"`
+	MergedBy     *struct {
+		Login string `json:"login"`
+	} `json:"merged_by"`
+	AutoMerge *struct {
+		EnabledBy struct {
+			Login string `json:"login"`
+		} `json:"enabled_by"`
+	} `json:"auto_merge"`
+	Labels             []ghLabelRef `json:"labels"`
+	Assignees          []ghUserRef  `json:"assignees"`
+	RequestedReviewers []ghUserRef  `json:"requested_reviewers"`
+}
+
+type ghLabelRef struct {
+	Name string `json:"name"`
+}
+type ghUserRef struct {
+	Login string `json:"login"`
+}
+
+func ghLabelNames(ls []ghLabelRef) []string {
+	if len(ls) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ls))
+	for _, l := range ls {
+		if l.Name != "" {
+			out = append(out, l.Name)
+		}
+	}
+	return out
+}
+
+func ghUserLogins(us []ghUserRef) []string {
+	if len(us) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(us))
+	for _, u := range us {
+		if u.Login != "" {
+			out = append(out, u.Login)
+		}
+	}
+	return out
+}
+
+// ghPRRef is the head/base side of a PR: branch ref, tip sha, and the repo it
+// lives in (head repo ≠ base repo ⇒ fork PR).
+type ghPRRef struct {
+	Ref  string `json:"ref"`
+	SHA  string `json:"sha"`
+	Repo *struct {
+		FullName string `json:"full_name"`
+	} `json:"repo"`
+}
+
+func (r ghPRRef) repoName() string {
+	if r.Repo == nil {
+		return ""
+	}
+	return r.Repo.FullName
 }
 
 func (d ghPRDetail) stateLabel() string {
@@ -566,12 +682,14 @@ type ghSearchCommit struct {
 	Commit struct {
 		Message string `json:"message"`
 		Author  struct {
-			Name  string `json:"name"`
-			Email string `json:"email"`
+			Name  string    `json:"name"`
+			Email string    `json:"email"`
+			Date  time.Time `json:"date"`
 		} `json:"author"`
 		Committer struct {
 			Date time.Time `json:"date"`
 		} `json:"committer"`
+		CommentCount int `json:"comment_count"`
 	} `json:"commit"`
 	// Author is the GitHub user linked to the commit's author email, when one
 	// exists. Empty (or nil-shaped) for commits from authors whose email isn't
@@ -579,15 +697,25 @@ type ghSearchCommit struct {
 	Author struct {
 		Login string `json:"login"`
 	} `json:"author"`
+	Committer struct {
+		Login string `json:"login"`
+	} `json:"committer"`
+	Parents []struct {
+		SHA string `json:"sha"`
+	} `json:"parents"`
 	Repository *struct {
 		FullName string `json:"full_name"`
 	} `json:"repository"`
 }
 
 type ghReview struct {
+	ID   int `json:"id"`
 	User struct {
 		Login string `json:"login"`
 	} `json:"user"`
 	State       string    `json:"state"` // APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED | PENDING
 	SubmittedAt time.Time `json:"submitted_at"`
+	Body        string    `json:"body"`
+	CommitID    string    `json:"commit_id"`
+	AuthorAssoc string    `json:"author_association"`
 }

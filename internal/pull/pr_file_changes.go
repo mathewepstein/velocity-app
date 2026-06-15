@@ -50,10 +50,12 @@ func (p *GithubPuller) FetchPRFileChanges(ctx context.Context, repo string, numb
 				continue
 			}
 			all = append(all, cache.FileChange{
-				Path:      f.Filename,
-				Status:    f.Status,
-				Additions: f.Additions,
-				Deletions: f.Deletions,
+				Path:             f.Filename,
+				Status:           f.Status,
+				Additions:        f.Additions,
+				Deletions:        f.Deletions,
+				PreviousFilename: f.PreviousFilename,
+				BlobSHA:          f.SHA,
 			})
 		}
 		if len(batch) < perPage {
@@ -88,8 +90,10 @@ func (p *GithubPuller) HydratePRFileChanges(ctx context.Context, pr *cache.GitHu
 // ghPRFileDetail is the richer subset of the /pulls/{number}/files response:
 // path plus status and per-file add/delete counts.
 type ghPRFileDetail struct {
-	Filename  string `json:"filename"`
-	Status    string `json:"status"` // added | modified | removed | renamed | copied | changed | unchanged
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
+	Filename         string `json:"filename"`
+	Status           string `json:"status"` // added | modified | removed | renamed | copied | changed | unchanged
+	Additions        int    `json:"additions"`
+	Deletions        int    `json:"deletions"`
+	PreviousFilename string `json:"previous_filename"` // set only on renames
+	SHA              string `json:"sha"`               // blob sha
 }

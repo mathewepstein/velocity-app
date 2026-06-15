@@ -131,6 +131,20 @@ CREATE TABLE IF NOT EXISTS github_prs (
     files_fetched           INTEGER NOT NULL DEFAULT 0,
     review_comments_fetched INTEGER NOT NULL DEFAULT 0,
     file_changes_fetched    INTEGER NOT NULL DEFAULT 0,
+    base_branch             TEXT,
+    base_sha                TEXT,
+    head_sha                TEXT,
+    head_repo               TEXT,
+    base_repo               TEXT,
+    merged_by               TEXT,
+    commit_count            INTEGER NOT NULL DEFAULT 0,
+    changed_files           INTEGER NOT NULL DEFAULT 0,
+    merge_commit_sha        TEXT,
+    draft                   INTEGER NOT NULL DEFAULT 0,
+    auto_merge              INTEGER NOT NULL DEFAULT 0,
+    updated                 TEXT,
+    author_association      TEXT,
+    commits_fetched         INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (scope, month, repo, number)
 );
 CREATE INDEX IF NOT EXISTS idx_prs_cell ON github_prs (scope, month);
@@ -150,15 +164,44 @@ CREATE INDEX IF NOT EXISTS idx_pr_files_cell ON pr_files (scope, month);
 
 CREATE TABLE IF NOT EXISTS pr_review_comments (
     scope TEXT NOT NULL, month TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL, ord INTEGER NOT NULL,
-    author TEXT, path TEXT, in_reply_to INTEGER, created TEXT NOT NULL, body TEXT
+    author TEXT, path TEXT, in_reply_to INTEGER, created TEXT NOT NULL, body TEXT,
+    comment_id INTEGER, review_id INTEGER, commit_id TEXT, line INTEGER, original_line INTEGER,
+    updated TEXT, author_association TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pr_review_comments_cell ON pr_review_comments (scope, month);
 
 CREATE TABLE IF NOT EXISTS pr_file_changes (
     scope TEXT NOT NULL, month TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL, ord INTEGER NOT NULL,
-    path TEXT NOT NULL, status TEXT, additions INTEGER NOT NULL, deletions INTEGER NOT NULL
+    path TEXT NOT NULL, status TEXT, additions INTEGER NOT NULL, deletions INTEGER NOT NULL,
+    previous_filename TEXT, blob_sha TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_pr_file_changes_cell ON pr_file_changes (scope, month);
+
+CREATE TABLE IF NOT EXISTS pr_commits (
+    scope TEXT NOT NULL, month TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL, ord INTEGER NOT NULL,
+    sha TEXT NOT NULL, author TEXT, author_name TEXT, author_email TEXT, authored TEXT, parent_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_pr_commits_cell ON pr_commits (scope, month);
+CREATE INDEX IF NOT EXISTS idx_pr_commits_pr ON pr_commits (repo, number);
+CREATE INDEX IF NOT EXISTS idx_pr_commits_sha ON pr_commits (sha);
+
+CREATE TABLE IF NOT EXISTS pr_labels (
+    scope TEXT NOT NULL, month TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL,
+    ord INTEGER NOT NULL, value TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pr_labels_cell ON pr_labels (scope, month);
+
+CREATE TABLE IF NOT EXISTS pr_assignees (
+    scope TEXT NOT NULL, month TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL,
+    ord INTEGER NOT NULL, value TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pr_assignees_cell ON pr_assignees (scope, month);
+
+CREATE TABLE IF NOT EXISTS pr_requested_reviewers (
+    scope TEXT NOT NULL, month TEXT NOT NULL, repo TEXT NOT NULL, number INTEGER NOT NULL,
+    ord INTEGER NOT NULL, value TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pr_requested_reviewers_cell ON pr_requested_reviewers (scope, month);
 
 CREATE TABLE IF NOT EXISTS github_commits (
     scope     TEXT NOT NULL,
@@ -171,6 +214,10 @@ CREATE TABLE IF NOT EXISTS github_commits (
     committed TEXT NOT NULL,
     additions INTEGER NOT NULL,
     deletions INTEGER NOT NULL,
+    authored      TEXT,
+    committer     TEXT,
+    parent_count  INTEGER NOT NULL DEFAULT 0,
+    comment_count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (scope, month, sha, repo)
 );
 CREATE INDEX IF NOT EXISTS idx_commits_cell ON github_commits (scope, month);
@@ -190,7 +237,11 @@ CREATE TABLE IF NOT EXISTS github_reviews (
     repo      TEXT NOT NULL,
     reviewer  TEXT,
     state     TEXT,
-    submitted TEXT NOT NULL
+    submitted TEXT NOT NULL,
+    review_id          INTEGER,
+    body               TEXT,
+    commit_id          TEXT,
+    author_association TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_reviews_cell ON github_reviews (scope, month);
 CREATE INDEX IF NOT EXISTS idx_reviews_reviewer ON github_reviews (reviewer);
@@ -201,7 +252,8 @@ CREATE INDEX IF NOT EXISTS idx_reviews_reviewer ON github_reviews (reviewer);
 var allRecordTables = []string{
 	"jira_labels", "jira_components", "jira_changelog", "jira_comments",
 	"jira_issue_links", "jira_attachments", "jira_fix_versions", "jira_issue_fields", "jira_issues",
-	"pr_issue_keys", "pr_files", "pr_review_comments", "pr_file_changes", "github_prs",
+	"pr_issue_keys", "pr_files", "pr_review_comments", "pr_file_changes",
+	"pr_commits", "pr_labels", "pr_assignees", "pr_requested_reviewers", "github_prs",
 	"commit_issue_keys", "github_commits",
 	"github_reviews",
 	"manifest",

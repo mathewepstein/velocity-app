@@ -72,13 +72,24 @@ func (p *GithubPuller) FetchReviewComments(ctx context.Context, repo string, num
 
 	out := make([]cache.ReviewComment, 0, len(raw))
 	for _, c := range raw {
-		out = append(out, cache.ReviewComment{
-			Author:    c.User.Login,
-			Path:      c.Path,
-			InReplyTo: c.InReplyTo,
-			Created:   c.CreatedAt,
-			Body:      c.Body,
-		})
+		rc := cache.ReviewComment{
+			Author:            c.User.Login,
+			Path:              c.Path,
+			InReplyTo:         c.InReplyTo,
+			Created:           c.CreatedAt,
+			Body:              c.Body,
+			ID:                c.ID,
+			ReviewID:          c.PullRequestReviewID,
+			CommitID:          c.CommitID,
+			Line:              c.Line,
+			OriginalLine:      c.OriginalLine,
+			AuthorAssociation: c.AuthorAssoc,
+		}
+		if c.UpdatedAt != nil {
+			u := c.UpdatedAt.UTC()
+			rc.Updated = &u
+		}
+		out = append(out, rc)
 	}
 	return ReviewCommentData{Comments: out, DeepThreads: countDeepThreads(raw)}, nil
 }
@@ -150,7 +161,13 @@ type ghReviewComment struct {
 	User      struct {
 		Login string `json:"login"`
 	} `json:"user"`
-	Path      string    `json:"path"`
-	Body      string    `json:"body"`
-	CreatedAt time.Time `json:"created_at"`
+	Path                string     `json:"path"`
+	Body                string     `json:"body"`
+	CreatedAt           time.Time  `json:"created_at"`
+	UpdatedAt           *time.Time `json:"updated_at"`
+	PullRequestReviewID int        `json:"pull_request_review_id"`
+	CommitID            string     `json:"commit_id"`
+	Line                int        `json:"line"`
+	OriginalLine        int        `json:"original_line"`
+	AuthorAssoc         string     `json:"author_association"`
 }

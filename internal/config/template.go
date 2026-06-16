@@ -111,6 +111,13 @@ name = "default"
     alpha = 1.0
     beta  = 0.5
     gamma = 2.0
+    # Deletion-weighting (OFF by default). When on, deleted lines count for
+    # deletion_weight each instead of 1:1 with additions, so a large dead-code
+    # removal stops reading as the same code_impact as writing the same volume.
+    # Applies to both the score and the monthly/weekly trend charts. deletion_weight
+    # = 1.0 is a no-op; exact 0 is treated as unset (use e.g. 0.01 to all-but-ignore).
+    deletion_weighting = false
+    deletion_weight    = 1.0
     # Bulk-data-dump dampening (ON by default). A single PR dominated by one
     # serialized-data extension (json/csv/xml/… — a fixture/export dump) has
     # those data files credited at dump_weight in BOTH the LOC and file-count

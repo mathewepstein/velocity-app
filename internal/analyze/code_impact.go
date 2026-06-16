@@ -61,11 +61,14 @@ func isBulkDataDump(paths []string, ci config.CodeImpactConfig) bool {
 
 // Optional code_impact patches (dashboard-metrics-overhaul D4).
 //
-// Two opt-in knobs refine the L (LOC) input to code_impact so framework dumps
-// and boilerplate stop registering as substance. Both default OFF in
-// CodeImpactConfig; when off, effectiveLOCInWindow returns the raw merged-PR
-// LOC sum, so code_impact is computed exactly as before.
+// Three opt-in knobs refine the L (LOC) input to code_impact so framework
+// dumps, boilerplate, and bulk deletions stop registering as full substance.
+// All default OFF in CodeImpactConfig; when off, effectiveLOCInWindow returns
+// the raw merged-PR LOC sum, so code_impact is computed exactly as before.
 //
+//   0. Deletion-weighting — deleted lines count for DeletionWeight each instead
+//      of 1:1 with additions (see weightedLOC), so a large dead-code removal no
+//      longer reads as the same impact as writing the same volume.
 //   1. Bulk-import dampening — a single PR that adds a large amount of code,
 //      almost entirely additions, across many added-status files (a vendor /
 //      boilerplate dump) has its LOC contribution scaled by BulkImportWeight.
@@ -136,7 +139,7 @@ func effectiveLOCInWindow(data *Loaded, start, end cache.Month, churn map[string
 // merged PR's LOC. A PR with no FileChange detail can't be churn-weighted, so
 // its raw LOC passes through (still subject to the PR-level bulk-import damp).
 func effectivePRLOC(p cache.GitHubPR, churn map[string]int, ci config.CodeImpactConfig) float64 {
-	rawLOC := float64(p.Additions + p.Deletions)
+	rawLOC := weightedLOC(p.Additions, p.Deletions, ci)
 
 	// Bulk-data-dump dampening: a fixture/export dump (one serialized-data
 	// extension dominating a large PR) contributes its PR-level LOC at
@@ -159,10 +162,24 @@ func effectivePRLOC(p cache.GitHubPR, churn map[string]int, ci config.CodeImpact
 
 	var weighted float64
 	for _, fc := range p.FileChanges {
-		loc := float64(fc.Additions + fc.Deletions)
+		loc := weightedLOC(fc.Additions, fc.Deletions, ci)
 		weighted += churnWeight(churn[fc.Path], ci) * loc
 	}
 	return bulk * weighted
+}
+
+// weightedLOC returns a LOC magnitude with deleted lines scaled by the
+// deletion-weighting knob. With DeletionWeighting off (default) it's the raw
+// additions+deletions sum, byte-identical to the pre-knob metric; with it on,
+// deletions count for DeletionWeight each, so a large dead-code removal no
+// longer reads as equal to writing the same volume. Detection thresholds
+// (isBulkImport / isBulkDataDump) deliberately keep using raw counts — only the
+// LOC that flows into the formula is reweighted.
+func weightedLOC(additions, deletions int, ci config.CodeImpactConfig) float64 {
+	if !ci.DeletionWeighting {
+		return float64(additions + deletions)
+	}
+	return float64(additions) + ci.DeletionWeight*float64(deletions)
 }
 
 // isBulkImport reports whether a PR looks like a boilerplate / vendor dump:

@@ -199,6 +199,14 @@ func judge(ev *TicketEvidence, cfg config.StoryPointsConfig, points int, straddl
 	switch {
 	case len(ev.PRs) == 0:
 		return "low", true, "No merged PR — typing effort can't be assessed from the diff"
+	case isBenignHighBand(ev, cfg, points):
+		// S1 guardrail: a high band built from individually-small, benign signals
+		// (tiny OR deletion-dominated diff, no architectural contention, no real
+		// churn) is the CD-10114 signature — long Code-Review dwell + nit review
+		// rounds + touch-based domain risk inflating a mechanical change. The
+		// deterministic signals can't be trusted here, so route to the human/LLM
+		// pass rather than assert the band.
+		return "low", true, "High band on benign signals (small/deletion-dominated diff, no deep review threads, ≤1 rework) — likely inflated by cycle latency / nit reviews / touch-based risk; confirm scope"
 	case straddle:
 		return "low", true, "Raw effort sits between two Fibonacci steps — magnitude is ambiguous"
 	case points >= 5 && thinking < cfg.MinThinkingForHighBand:
@@ -218,6 +226,28 @@ func judge(ev *TicketEvidence, cfg config.StoryPointsConfig, points int, straddl
 		return "medium", false, ""
 	}
 	return "high", false, ""
+}
+
+// isBenignHighBand reports whether a high band (points ≥ BenignHighBandMinPoints)
+// rests entirely on benign signals — the S1 guardrail. It trips when the diff is
+// tiny (NetLOC < SmallDiffLOCFloor) OR deletion-dominated (DeletedLOC share ≥
+// DeletionDominantRatio), AND there is no architectural contention (DeepThreads
+// == 0) AND no real churn (ReworkCount ≤ 1). Those three together are the
+// CD-10114 shape: the band was assembled from Code-Review-dwell cycle base, nit
+// review rounds, and touch-based domain risk — none of which evidence genuine
+// complexity. Gated off when BenignHighBandMinPoints == 0.
+func isBenignHighBand(ev *TicketEvidence, cfg config.StoryPointsConfig, points int) bool {
+	if cfg.BenignHighBandMinPoints <= 0 || points < cfg.BenignHighBandMinPoints {
+		return false
+	}
+	if ev.DeepThreads > 0 || ev.ReworkCount > 1 {
+		return false
+	}
+	smallDiff := cfg.SmallDiffLOCFloor > 0 && ev.NetLOC > 0 && ev.NetLOC < cfg.SmallDiffLOCFloor
+	churn := ev.AddedLOC + ev.DeletedLOC
+	deletionDominated := cfg.DeletionDominantRatio > 0 && churn > 0 &&
+		float64(ev.DeletedLOC)/float64(churn) >= cfg.DeletionDominantRatio
+	return smallDiff || deletionDominated
 }
 
 // explain builds the hardest-aspect hint + the one-line signal summary.

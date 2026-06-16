@@ -200,6 +200,45 @@ func TestBuildChurnIndexCountsDistinctPRsPerPath(t *testing.T) {
 	}
 }
 
+// --- Deletion-weighting -------------------------------------------------
+
+func TestWeightedLOCGateOffEqualsRaw(t *testing.T) {
+	ci := defaultPatchConfig() // DeletionWeighting off
+	ci.DeletionWeight = 0.25   // set but ignored while the gate is off
+	if got := weightedLOC(100, 900, ci); got != 1000 {
+		t.Errorf("gate off must sum additions+deletions, got %v want 1000", got)
+	}
+}
+
+func TestWeightedLOCGateOn(t *testing.T) {
+	ci := defaultPatchConfig()
+	ci.DeletionWeighting = true
+	ci.DeletionWeight = 0.25
+	// 100 additions + 0.25*900 deletions = 325.
+	if got := weightedLOC(100, 900, ci); math.Abs(got-325) > 1e-9 {
+		t.Errorf("deletion-weighted LOC = %v, want 325", got)
+	}
+}
+
+func TestEffectivePRLOCDeletionWeighted(t *testing.T) {
+	ci := defaultPatchConfig()
+	ci.DeletionWeighting = true
+	ci.DeletionWeight = 0.25
+	// A pure dead-code-removal PR (the JE-CD CD-4992 shape): tiny additions,
+	// huge deletions, diverse extensions so neither dump nor bulk-import fires.
+	pr := cache.GitHubPR{Additions: 63, Deletions: 222606}
+	want := 63.0 + 0.25*222606.0
+	if got := effectivePRLOC(pr, nil, ci); math.Abs(got-want) > 1e-9 {
+		t.Errorf("deletion-weighted PR LOC = %v, want %v", got, want)
+	}
+	// Gate off → the same PR counts every deleted line 1:1.
+	off := ci
+	off.DeletionWeighting = false
+	if got := effectivePRLOC(pr, nil, off); got != 222669 {
+		t.Errorf("gate off should pass full raw LOC, got %v want 222669", got)
+	}
+}
+
 // --- Bulk-data-dump dampening (dashboard-overhaul code_impact rework) ---
 
 // filesWithExt builds n file paths all carrying the given extension.

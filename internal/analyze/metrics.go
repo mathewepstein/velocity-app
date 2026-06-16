@@ -112,7 +112,7 @@ func rollupMonthly(data *Loaded, start, end cache.Month, ci config.CodeImpactCon
 		key := m.String()
 		row := byMonth[key]
 		row.UniqueFilesTouched = len(filesByMonth[key])
-		row.CodeImpact = computeCodeImpact(row.UniqueFilesTouched, row.LOCAdded+row.LOCDeleted, row.PRsMerged, ci)
+		row.CodeImpact = computeCodeImpactFloat(float64(row.UniqueFilesTouched), weightedLOC(row.LOCAdded, row.LOCDeleted, ci), row.PRsMerged, ci)
 		out = append(out, *row)
 	}
 	return out
@@ -191,7 +191,7 @@ func rollupWeekly(data *Loaded, start, end cache.Month, ci config.CodeImpactConf
 	for _, w := range weeks {
 		row := byWeek[w]
 		row.UniqueFilesTouched = len(filesByWeek[w])
-		row.CodeImpact = computeCodeImpact(row.UniqueFilesTouched, row.LOCAdded+row.LOCDeleted, row.PRsMerged, ci)
+		row.CodeImpact = computeCodeImpactFloat(float64(row.UniqueFilesTouched), weightedLOC(row.LOCAdded, row.LOCDeleted, ci), row.PRsMerged, ci)
 		out = append(out, *row)
 	}
 	return out

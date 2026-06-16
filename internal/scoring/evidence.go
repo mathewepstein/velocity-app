@@ -62,13 +62,13 @@ type TicketEvidence struct {
 
 	// --- Thinking / process signals (from changelog + comments, derived at
 	// detail-hydration time and cached on the issue). ---
-	CycleHours      float64    `json:"cycle_hours,omitempty"`       // In Progress → Done (raw, includes waits)
-	QueueHours      float64    `json:"queue_hours,omitempty"`       // time parked in QA-queue / wait statuses
-	ActiveCycleHours float64   `json:"active_cycle_hours,omitempty"` // cycle minus queue — the band axis
-	StatusFlips     int        `json:"status_flips,omitempty"`      // raw re-entry count (display only)
-	ReworkCount     int        `json:"rework_count,omitempty"`      // backward bounces review/QA→dev — the band signal
-	PreCodeComments int        `json:"pre_code_comments,omitempty"`
-	TotalComments   int        `json:"total_comments,omitempty"`
+	CycleHours       float64 `json:"cycle_hours,omitempty"`        // In Progress → Done (raw, includes waits)
+	QueueHours       float64 `json:"queue_hours,omitempty"`        // time parked in QA-queue / wait statuses
+	ActiveCycleHours float64 `json:"active_cycle_hours,omitempty"` // cycle minus queue — the band axis
+	StatusFlips      int     `json:"status_flips,omitempty"`       // raw re-entry count (display only)
+	ReworkCount      int     `json:"rework_count,omitempty"`       // backward bounces review/QA→dev — the band signal
+	PreCodeComments  int     `json:"pre_code_comments,omitempty"`
+	TotalComments    int     `json:"total_comments,omitempty"`
 	// Spike artifact-density signals, derived from description + comment bodies at
 	// extraction time. ArtifactLinks counts distinct doc/planning URLs (Confluence,
 	// MCP, implementation/discovery markdown); SubstantiveComments counts comments
@@ -80,8 +80,8 @@ type TicketEvidence struct {
 	// extraction time. SpawnedCount counts follow-up work the investigation
 	// produced (subtasks + outward creation links); LinkBreadth counts distinct
 	// linked counterparts. Both feed the spike scorer; inert on the standard path.
-	SpawnedCount int `json:"spawned_count,omitempty"`
-	LinkBreadth  int `json:"link_breadth,omitempty"`
+	SpawnedCount    int        `json:"spawned_count,omitempty"`
+	LinkBreadth     int        `json:"link_breadth,omitempty"`
 	FirstInProgress *time.Time `json:"first_in_progress,omitempty"`
 	DoneAt          *time.Time `json:"done_at,omitempty"`
 	DetailFetched   bool       `json:"detail_fetched"`
@@ -90,20 +90,22 @@ type TicketEvidence struct {
 	PRs []PREvidence `json:"prs,omitempty"`
 
 	// --- Typing + review rollups across the matched PRs. ---
-	RawLOC                  int      `json:"raw_loc"`              // additions+deletions, all files
-	NetLOC                  int      `json:"net_loc"`              // additions+deletions excl. generated files
-	FileCount               int      `json:"file_count"`           // distinct non-generated paths
-	DirSpread               int      `json:"dir_spread"`           // distinct top-level dirs touched
-	TestFilesTouched        int      `json:"test_files_touched"`   // distinct test-file paths
-	Repos                   []string `json:"repos,omitempty"`      // distinct repos touched
-	ReviewRounds            int      `json:"review_rounds"`        // CHANGES_REQUESTED reviews across PRs
-	DistinctReviewers       int      `json:"distinct_reviewers"`   // union of reviewers across PRs
-	InlineComments    int     `json:"inline_comments"` // sum of PR inline review comments
-	DeepThreads       int     `json:"deep_threads"`    // sum of 3+-reply inline threads
-	TimeToMergeHours  float64 `json:"time_to_merge_hours,omitempty"` // max across matched PRs
+	RawLOC            int      `json:"raw_loc"`                       // additions+deletions, all files
+	NetLOC            int      `json:"net_loc"`                       // additions+deletions excl. generated files
+	AddedLOC          int      `json:"added_loc"`                     // additions only, excl. generated files
+	DeletedLOC        int      `json:"deleted_loc"`                   // deletions only, excl. generated files
+	FileCount         int      `json:"file_count"`                    // distinct non-generated paths
+	DirSpread         int      `json:"dir_spread"`                    // distinct top-level dirs touched
+	TestFilesTouched  int      `json:"test_files_touched"`            // distinct test-file paths
+	Repos             []string `json:"repos,omitempty"`               // distinct repos touched
+	ReviewRounds      int      `json:"review_rounds"`                 // CHANGES_REQUESTED reviews across PRs
+	DistinctReviewers int      `json:"distinct_reviewers"`            // union of reviewers across PRs
+	InlineComments    int      `json:"inline_comments"`               // sum of PR inline review comments
+	DeepThreads       int      `json:"deep_threads"`                  // sum of 3+-reply inline threads
+	TimeToMergeHours  float64  `json:"time_to_merge_hours,omitempty"` // max across matched PRs
 
 	// --- Touched-area risk (corpus-relative). ---
-	TouchedAreaRisk string   `json:"touched_area_risk"`  // low | medium | high
+	TouchedAreaRisk string   `json:"touched_area_risk"`   // low | medium | high
 	HotFiles        []string `json:"hot_files,omitempty"` // touched files in the top corpus-frequency tier
 	// RiskReason names the configured domain-risk glob that drove (or tied for)
 	// the tier, when the domain dimension is what elevated it. Empty when the
@@ -124,7 +126,7 @@ type PREvidence struct {
 	TestFiles         int        `json:"test_files"`
 	Created           time.Time  `json:"created"`
 	Merged            *time.Time `json:"merged,omitempty"`
-	ReviewRounds      int        `json:"review_rounds"`      // CHANGES_REQUESTED reviews on this PR
+	ReviewRounds      int        `json:"review_rounds"` // CHANGES_REQUESTED reviews on this PR
 	DistinctReviewers int        `json:"distinct_reviewers"`
 	InlineComments    int        `json:"inline_comments"`
 	DeepThreads       int        `json:"deep_threads"`
@@ -136,13 +138,13 @@ type Extractor struct {
 	norm    config.NormalizeConfig
 	riskCfg config.RiskConfig // config-driven domain risk (empty = churn-only baseline)
 
-	issueByKey map[string]*cache.JiraIssue
-	prsByKey   map[string][]*cache.GitHubPR // ticket key -> PRs referencing it
-	reviewsByPR map[string][]cache.GitHubReview
+	issueByKey       map[string]*cache.JiraIssue
+	prsByKey         map[string][]*cache.GitHubPR // ticket key -> PRs referencing it
+	reviewsByPR      map[string][]cache.GitHubReview
 	commitTimesByKey map[string][]time.Time // ticket key -> linked commit timestamps (for de-noised rework)
-	reworkMinDwell   time.Duration  // rescue threshold for the rework de-noiser (StoryPoints.ReworkMinDwell)
-	fileFreq   map[string]int // corpus-wide count of PRs touching each path
-	hotCutoff  int            // file-frequency threshold for "hot"
+	reworkMinDwell   time.Duration          // rescue threshold for the rework de-noiser (StoryPoints.ReworkMinDwell)
+	fileFreq         map[string]int         // corpus-wide count of PRs touching each path
+	hotCutoff        int                    // file-frequency threshold for "hot"
 }
 
 // BuildExtractor loads the full corpus from store for profile and returns a
@@ -250,11 +252,11 @@ func (e *Extractor) Extract(ticketKey string) (*TicketEvidence, bool) {
 		// CycleHours is absent (band then falls back to Created→Resolved).
 		QueueHours:       queueHoursOf(iss),
 		ActiveCycleHours: activeCycleHoursOf(iss),
-		PreCodeComments:     iss.PreCodeComments,
-		TotalComments:       len(iss.Comments),
-		FirstInProgress:     iss.FirstInProgress,
-		DoneAt:              iss.DoneAt,
-		DetailFetched:       iss.DetailFetched,
+		PreCodeComments:  iss.PreCodeComments,
+		TotalComments:    len(iss.Comments),
+		FirstInProgress:  iss.FirstInProgress,
+		DoneAt:           iss.DoneAt,
+		DetailFetched:    iss.DetailFetched,
 	}
 	ev.ArtifactLinks, ev.SubstantiveComments = spikeArtifactSignals(iss)
 	ev.SpawnedCount, ev.LinkBreadth = spikeLinkSignals(iss)
@@ -339,6 +341,7 @@ func (e *Extractor) Extract(ticketKey string) (*TicketEvidence, bool) {
 	// Net LOC: re-sum per-file additions+deletions over non-generated files when
 	// FileChanges are available; otherwise fall back to RawLOC (path list only).
 	ev.NetLOC = netLOC(prs, e.norm)
+	ev.AddedLOC, ev.DeletedLOC = addDelLOC(prs, e.norm)
 	ev.FileCount = len(netFiles)
 	ev.DirSpread = len(dirs)
 	ev.TestFilesTouched = len(testFiles)
@@ -398,6 +401,31 @@ func netLOC(prs []*cache.GitHubPR, norm config.NormalizeConfig) int {
 		}
 	}
 	return total
+}
+
+// addDelLOC splits non-generated churn into additions and deletions, using
+// per-file FileChanges where present (the precise signal) and falling back to
+// the PR-level additions/deletions when a PR has no FileChanges cached. The
+// fallback can't attribute generated-file churn, but PRs with FileChanges (the
+// corpus-wide norm post-backfill) are exact. Used by the S1 deletion-dominated
+// guardrail; NetLOC stays the additions+deletions sum so existing band math is
+// unchanged.
+func addDelLOC(prs []*cache.GitHubPR, norm config.NormalizeConfig) (added, deleted int) {
+	for _, pr := range prs {
+		if len(pr.FileChanges) == 0 {
+			added += pr.Additions
+			deleted += pr.Deletions
+			continue
+		}
+		for _, fc := range pr.FileChanges {
+			if analyze.IsGeneratedPath(fc.Path, norm) {
+				continue
+			}
+			added += fc.Additions
+			deleted += fc.Deletions
+		}
+	}
+	return added, deleted
 }
 
 // distinctPaths returns the set of file paths a PR touched, preferring

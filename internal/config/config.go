@@ -157,6 +157,22 @@ type StoryPointsConfig struct {
 	// trips it, not every defensible-contention 13. 0 disables. Default 18.
 	SplitThreshold float64 `toml:"split_threshold"`
 
+	// BenignHighBandMinPoints / DeletionDominantRatio implement the S1 "benign
+	// high-band" guardrail (storypoints-next-round-improvements-plan). A high band
+	// (points ≥ BenignHighBandMinPoints) built from individually-small, benign
+	// signals — a tiny OR deletion-dominated diff, no architectural contention
+	// (DeepThreads == 0), and no real churn (ReworkCount ≤ 1) — can't be trusted:
+	// it's the CD-10114 signature (long Code-Review dwell + nit review rounds +
+	// touch-based domain risk inflating a mechanical deletion to a confident 13).
+	// When tripped, the band's *value* is unchanged but it is flagged NeedsInsight
+	// and confidence is forced to "low", routing it to the human/LLM pass instead
+	// of asserting it. The "deletion-dominated" arm fires when DeletedLOC /
+	// (AddedLOC+DeletedLOC) ≥ DeletionDominantRatio; the "tiny" arm reuses
+	// SmallDiffLOCFloor. BenignHighBandMinPoints 0 disables the guardrail.
+	// Defaults: min points 8, deletion-dominant ratio 0.8.
+	BenignHighBandMinPoints int     `toml:"benign_high_band_min_points"`
+	DeletionDominantRatio   float64 `toml:"deletion_dominant_ratio"`
+
 	// Risk adds a config-driven *domain* dimension to touched-area risk on top of
 	// the corpus-churn signal. The churn signal (hot-file frequency) is the
 	// zero-config baseline; Risk layers genuine risk-by-location (auth, billing,
@@ -419,6 +435,20 @@ type CodeImpactConfig struct {
 	Beta  float64 `toml:"beta"`
 	Gamma float64 `toml:"gamma"`
 
+	// DeletionWeighting scales deleted lines relative to added lines in the LOC
+	// term, so a large dead-code removal stops reading as the same "impact" as
+	// writing the same volume. OFF by default — when off, deletions count 1:1
+	// with additions (loc = additions + deletions), exactly the pre-knob metric.
+	// When on, the LOC input becomes additions + DeletionWeight·deletions,
+	// applied at BOTH window scope (the score) and row scope (the monthly/weekly
+	// trend chart), since the face-validity concern is most visible on the chart.
+	//   - DeletionWeight: weight applied to deleted lines (default 1.0 = no
+	//     change; e.g. 0.25 counts a deletion as a quarter of an addition). Exact
+	//     0 is treated as unset and refilled to 1.0 — use a small value (e.g.
+	//     0.01) to all-but-ignore deletions.
+	DeletionWeighting bool    `toml:"deletion_weighting"`
+	DeletionWeight    float64 `toml:"deletion_weight"`
+
 	// ChurnWeighting weights each file's LOC by how often it's revisited
 	// across the corpus, so add-once boilerplate counts less than
 	// repeatedly-edited files. OFF by default — when off, code_impact is
@@ -641,22 +671,24 @@ func DefaultStoryPointsConfig() StoryPointsConfig {
 		// sums exactly on Fibonacci midpoints (1.5, 2.5, …), which the straddle
 		// detector then flags spuriously. Integer sums snap cleanly except a true
 		// 4 (the 3↔5 midpoint), which genuinely warrants a straddle.
-		ReworkWeight:           2.0,
-		ReviewRoundWeight:      1.0,
-		DeepThreadWeight:       2.0,
-		HighRiskBonus:          2.0,
-		MediumRiskBonus:        1.0,
-		CrossRepoBonus:         1.0,
-		StraddleFraction:       0.15,
-		MinThinkingForHighBand: 1.0,
-		MaxThinkingBonus:       0, // disabled by default — see field doc
-		ReworkMinDwellMins:     5,
-		HighBandThinkingShare:  0.5,
-		ReworkCountCap:         3,
-		ReviewRoundCap:         4,
-		SmallDiffLOCFloor:      20,
-		SmallDiffBonusScale:    0.5,
-		SplitThreshold:         18,
+		ReworkWeight:            2.0,
+		ReviewRoundWeight:       1.0,
+		DeepThreadWeight:        2.0,
+		HighRiskBonus:           2.0,
+		MediumRiskBonus:         1.0,
+		CrossRepoBonus:          1.0,
+		StraddleFraction:        0.15,
+		MinThinkingForHighBand:  1.0,
+		MaxThinkingBonus:        0, // disabled by default — see field doc
+		ReworkMinDwellMins:      5,
+		HighBandThinkingShare:   0.5,
+		ReworkCountCap:          3,
+		ReviewRoundCap:          4,
+		SmallDiffLOCFloor:       20,
+		SmallDiffBonusScale:     0.5,
+		SplitThreshold:          18,
+		BenignHighBandMinPoints: 8,
+		DeletionDominantRatio:   0.8,
 		// Risk and Bug ship empty/neutral by intent — no org-specific paths or
 		// weighting in the binary. Spike ships working defaults so a routed spike
 		// scores without requiring config.
@@ -698,6 +730,9 @@ func DefaultScoringConfig() ScoringConfig {
 			Alpha: 1.0,
 			Beta:  0.5,
 			Gamma: 2.0,
+			// Deletion-weighting default OFF (the bool); DeletionWeight=1.0 is a
+			// no-op so enabling the gate without tuning the weight changes nothing.
+			DeletionWeight: 1.0,
 			// Churn-weighting + bulk-import dampening default OFF (the bools);
 			// these tunables only take effect once a knob is enabled. Defaults
 			// preserve the pre-patch code_impact exactly.
@@ -1122,6 +1157,13 @@ func (c *Config) applyDefaults() {
 	if p.Scoring.CodeImpact.Gamma == 0 {
 		p.Scoring.CodeImpact.Gamma = defaults.Scoring.CodeImpact.Gamma
 	}
+	// DeletionWeight fills to 1.0 (no-op) when omitted; the DeletionWeighting
+	// bool gates the feature, so an absent weight never alters the metric. Exact
+	// 0 is indistinguishable from unset and refills to 1.0 — document the
+	// small-value workaround rather than reach for a pointer here.
+	if p.Scoring.CodeImpact.DeletionWeight == 0 {
+		p.Scoring.CodeImpact.DeletionWeight = defaults.Scoring.CodeImpact.DeletionWeight
+	}
 	// Churn / bulk-import tunables fill in only when omitted (zero). The bool
 	// toggles intentionally have no fill — their zero value (false / OFF) is
 	// the intended default that preserves the pre-patch code_impact.
@@ -1263,6 +1305,12 @@ func (c *Config) applyDefaults() {
 	}
 	if p.StoryPoints.SplitThreshold == 0 {
 		p.StoryPoints.SplitThreshold = spDef.SplitThreshold
+	}
+	if p.StoryPoints.BenignHighBandMinPoints == 0 {
+		p.StoryPoints.BenignHighBandMinPoints = spDef.BenignHighBandMinPoints
+	}
+	if p.StoryPoints.DeletionDominantRatio == 0 {
+		p.StoryPoints.DeletionDominantRatio = spDef.DeletionDominantRatio
 	}
 	// MaxThinkingBonus has no fill: its zero value (disabled) is the intended
 	// default, like the dump/churn toggles in CodeImpactConfig. Risk and Bug have

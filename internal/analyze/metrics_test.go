@@ -27,7 +27,7 @@ func TestRollupMonthly_AttributionAndZeroFill(t *testing.T) {
 			},
 			{
 				Key: "CD-2", Created: mustTime("2026-02-01T00:00:00Z"),
-				Updated: mustTime("2026-02-20T00:00:00Z"),
+				Updated:  mustTime("2026-02-20T00:00:00Z"),
 				Resolved: ptrTime(mustTime("2026-03-01T00:00:00Z")),
 			},
 		},
@@ -35,7 +35,7 @@ func TestRollupMonthly_AttributionAndZeroFill(t *testing.T) {
 			{Number: 1, Created: mustTime("2026-01-10T00:00:00Z"), Additions: 100, Deletions: 20},
 			{
 				Number: 2, Created: mustTime("2026-02-15T00:00:00Z"),
-				Merged: ptrTime(mustTime("2026-03-05T00:00:00Z")),
+				Merged:    ptrTime(mustTime("2026-03-05T00:00:00Z")),
 				Additions: 500, Deletions: 200,
 			},
 		},

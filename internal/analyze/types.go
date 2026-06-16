@@ -82,6 +82,14 @@ type Totals struct {
 	ActiveWeeks           int     `json:"active_weeks"` // ISO weeks in the window with ANY activity
 	UniqueFilesTouched    int     `json:"unique_files_touched"`
 	CodeImpact            float64 `json:"code_impact"`
+
+	// IntegrationPRs is the display-only count of merged PRs in the window that
+	// the integration classifier flagged as merge-up / integration PRs. Zero
+	// when integration scoring is disabled (the classifier isn't built). The
+	// scored prs_*/loc/code_impact down-weighting these drive lives off the
+	// scoring-only override (DevWindowMetrics.scored), NOT here — this is purely
+	// informational so a release-lead's lower composite is explainable.
+	IntegrationPRs int `json:"integration_prs,omitempty"`
 }
 
 // MonthlyRow is the per-month rollup used inside windows and full history.
@@ -157,6 +165,23 @@ type DevWindowMetrics struct {
 	// applyCodeImpactCap when a knob is enabled. Unexported for the same
 	// anti-gaming reason as effectiveFiles.
 	effectiveLOC float64
+
+	// scored carries the integration-down-weighted prs_*/loc scoring inputs. Nil
+	// unless integration scoring is enabled; when nil, computeContributorScores
+	// reads the raw Totals (byte-identical to the pre-feature path). Unexported —
+	// scoring-only, never serialized, like effectiveFiles/effectiveLOC.
+	scored *scoredMetrics
+}
+
+// scoredMetrics holds the integration-down-weighted values of the metrics a
+// merge-up PR inflates. A flagged PR contributes the configured factor instead
+// of 1.0; with the feature off these are never populated. prsMerged also feeds
+// code_impact's γ·merged term (LOC/files are down-weighted inside the effective*
+// walks). See integration-pr-detection-phase-b-plan.md.
+type scoredMetrics struct {
+	prsCreated float64
+	prsMerged  float64
+	locChanged float64
 }
 
 // ProjectShare is one dev's footprint on one detected epic. The dev/* fields

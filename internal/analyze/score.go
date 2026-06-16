@@ -11,17 +11,17 @@ import (
 // Keys match the TOML config (`[profiles.<p>.scoring.weights]`) and the
 // JSON breakdown shape so config, code, and UI stay in sync.
 const (
-	metricPRsMerged          = "prs_merged"
-	metricJiraIssuesResolved = "jira_issues_resolved"
-	metricCodeImpact         = "code_impact"
-	metricPRsReviewed        = "prs_reviewed"
-	metricPRsCreated         = "prs_created"
+	metricPRsMerged            = "prs_merged"
+	metricJiraIssuesResolved   = "jira_issues_resolved"
+	metricCodeImpact           = "code_impact"
+	metricPRsReviewed          = "prs_reviewed"
+	metricPRsCreated           = "prs_created"
 	metricJiraIssuesProgressed = "jira_issues_progressed"
-	metricJiraIssuesCreated  = "jira_issues_created"
-	metricActiveWeeks        = "active_weeks"
-	metricStoryPoints        = "story_points"
-	metricLOCChanged         = "loc_changed"
-	metricCommits            = "commits"
+	metricJiraIssuesCreated    = "jira_issues_created"
+	metricActiveWeeks          = "active_weeks"
+	metricStoryPoints          = "story_points"
+	metricLOCChanged           = "loc_changed"
+	metricCommits              = "commits"
 )
 
 // allMetrics is the canonical iteration order for breakdown serialization
@@ -112,6 +112,29 @@ func rawMetricValue(t Totals, metric string) float64 {
 	return 0
 }
 
+// metricValueForScoring returns the per-dev value of metric m used for z-scoring.
+// When the dev carries an integration-down-weighted override (d.scored, set only
+// when integration scoring is enabled), the prs_created / prs_merged /
+// loc_changed metrics read the down-weighted float; everything else — and the
+// entire metric set when d.scored is nil — falls through to rawMetricValue, so a
+// disabled feature is byte-identical to the pre-feature path. code_impact is NOT
+// overridden here: its down-weighting is folded into Totals.CodeImpact upstream
+// (the effective-files/LOC walks + the γ·merged term), consistent with how
+// code_impact already reflects gen-file dampening rather than raw inputs.
+func metricValueForScoring(d DevWindowMetrics, m string) float64 {
+	if d.scored != nil {
+		switch m {
+		case metricPRsCreated:
+			return d.scored.prsCreated
+		case metricPRsMerged:
+			return d.scored.prsMerged
+		case metricLOCChanged:
+			return d.scored.locChanged
+		}
+	}
+	return rawMetricValue(d.Totals, m)
+}
+
 // computeContributorScores attaches a ContributorScore to every mapped dev
 // in devs using the A4 model: weighted sum of per-metric z-scores across
 // the team in the same window. The synthetic "unknown" bucket is skipped
@@ -162,7 +185,7 @@ func computeContributorScores(devs []DevWindowMetrics, weights map[string]float6
 	for _, m := range allMetrics {
 		col := make([]float64, len(scoreable))
 		for idx, di := range scoreable {
-			col[idx] = rawMetricValue(devs[di].Totals, m)
+			col[idx] = metricValueForScoring(devs[di], m)
 			if isGameableMetric(m) {
 				col[idx] *= multipliers[idx]
 			}

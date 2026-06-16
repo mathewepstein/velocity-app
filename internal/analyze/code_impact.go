@@ -119,13 +119,15 @@ func fileChangePaths(p cache.GitHubPR) []string {
 // PRs in [start, end], after the optional churn-weighting + bulk-import knobs.
 // When both knobs are off it returns the raw LOCAdded+LOCDeleted sum, matching
 // the pre-patch metric exactly (same merged-PR-in-window walk as the rollup).
-func effectiveLOCInWindow(data *Loaded, start, end cache.Month, churn map[string]int, ci config.CodeImpactConfig) float64 {
+func effectiveLOCInWindow(data *Loaded, start, end cache.Month, churn map[string]int, ci config.CodeImpactConfig, w prIntegrationWeight) float64 {
 	var total float64
 	for _, p := range data.PRs {
 		if p.Merged == nil || !monthInRange(monthKey(*p.Merged), start, end) {
 			continue
 		}
-		total += effectivePRLOC(p, churn, ci)
+		// Integration down-weight: a merge-up PR's LOC is mostly re-shipped
+		// already-merged code, so it contributes its factor (else 1.0 / nil).
+		total += w.weightFor(p) * effectivePRLOC(p, churn, ci)
 	}
 	return total
 }

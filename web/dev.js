@@ -365,6 +365,24 @@
       bars.appendChild(row);
     });
     wrap.appendChild(bars);
+
+    // Integration-PR context: when the dev cut any merge-up / integration PRs
+    // in the window, explain that their PR / LoC / code-impact contribution is
+    // down-weighted in the score above. Display-only; absent (integration_prs
+    // unset or 0) when the feature is off, so nothing shows by default.
+    const totals = state.dev.totals || {};
+    const intg = totals.integration_prs || 0;
+    if (intg > 0) {
+      const merged = totals.prs_merged || 0;
+      const note = document.createElement('div');
+      note.className = 'lb-breakdown-note';
+      const isOne = intg === 1;
+      note.textContent =
+        `${formatNumber(intg)} of ${formatNumber(merged)} merged ${merged === 1 ? 'PR was' : 'PRs were'} ` +
+        `${isOne ? 'an integration / merge-up PR' : 'integration / merge-up PRs'} ` +
+        `(re-shipping already-merged commits) — their PR, LoC, and code-impact contribution is down-weighted in this score.`;
+      wrap.appendChild(note);
+    }
   }
 
   // ---- Projects panel (per-dev shares) ----

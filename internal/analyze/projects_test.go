@@ -38,8 +38,8 @@ func TestDetectProjects_HotMomentumAndDedupesPRsAcrossSubissues(t *testing.T) {
 			{Number: 1, Created: mustTime("2026-01-06T00:00:00Z"), IssueKeys: []string{"CD-101"}, Additions: 100}, // baseline W02
 			// Recent burst. PR 2 tags TWO sub-issues of the same epic → counts once.
 			{Number: 2, Created: mustTime("2026-02-24T00:00:00Z"), IssueKeys: []string{"CD-101", "CD-102"}, Additions: 300}, // W09
-			{Number: 3, Created: mustTime("2026-03-03T00:00:00Z"), IssueKeys: []string{"CD-102"}, Additions: 200},          // W10
-			{Number: 4, Created: mustTime("2026-03-04T00:00:00Z"), IssueKeys: []string{"CD-101"}, Additions: 150},          // W10
+			{Number: 3, Created: mustTime("2026-03-03T00:00:00Z"), IssueKeys: []string{"CD-102"}, Additions: 200},           // W10
+			{Number: 4, Created: mustTime("2026-03-04T00:00:00Z"), IssueKeys: []string{"CD-101"}, Additions: 150},           // W10
 		},
 	}
 	projects := detectProjects(data, momentumSurge())

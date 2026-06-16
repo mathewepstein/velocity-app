@@ -29,8 +29,17 @@ func devKey(id config.DevIdentity) string {
 // (date range [start, end], inclusive). Mirrors the field-by-field
 // attribution rules in rollupMonthly/rollupWeekly but skips the
 // per-month/per-week bookkeeping since we only need one summed row.
-func periodTotals(data *Loaded, id config.DevIdentity, start, end time.Time) Totals {
+func periodTotals(data *Loaded, id config.DevIdentity, start, end time.Time, iw prIntegrationWeight) (Totals, *scoredMetrics) {
 	var t Totals
+	// scored mirrors the down-weighted prs_*/loc inputs the composite path
+	// stashes in buildOneDev, so the Elo composite reads the same integration
+	// down-weight. Nil unless the feature is enabled → byte-identical Elo to the
+	// pre-feature path. Shares the weighter with the composite path so the two
+	// can't drift.
+	var scored *scoredMetrics
+	if iw != nil {
+		scored = &scoredMetrics{}
+	}
 	if id.JiraAccountID != "" {
 		weeksSeen := map[string]struct{}{}
 		for _, iss := range data.Issues {
@@ -69,14 +78,22 @@ func periodTotals(data *Loaded, id config.DevIdentity, start, end time.Time) Tot
 			if !id.MatchesGitHubLogin(pr.Author) {
 				continue
 			}
+			wt := iw.weightFor(pr) // 1.0 when iw is nil
 			if inRange(pr.Created, start, end) {
 				t.PRsCreated++
+				if scored != nil {
+					scored.prsCreated += wt
+				}
 				weeksSeen[isoWeek(pr.Created)] = struct{}{}
 			}
 			if pr.Merged != nil && inRange(*pr.Merged, start, end) {
 				t.PRsMerged++
 				t.LOCAdded += pr.Additions
 				t.LOCDeleted += pr.Deletions
+				if scored != nil {
+					scored.prsMerged += wt
+					scored.locChanged += wt * float64(pr.Additions+pr.Deletions)
+				}
 				weeksSeen[isoWeek(*pr.Merged)] = struct{}{}
 			}
 		}
@@ -117,7 +134,7 @@ func periodTotals(data *Loaded, id config.DevIdentity, start, end time.Time) Tot
 			t.ActiveWeeks += len(weeksSeen)
 		}
 	}
-	return t
+	return t, scored
 }
 
 // inRange reports whether t falls inside [start, end] (inclusive).
@@ -162,6 +179,7 @@ func applyEloPeriod(
 	data *Loaded,
 	period string,
 	scoring config.ScoringConfig,
+	iw prIntegrationWeight,
 ) error {
 	start, err := periodStart(period)
 	if err != nil {
@@ -174,9 +192,10 @@ func applyEloPeriod(
 
 	// 1. Build per-dev Totals + collect active devs.
 	type active struct {
-		idx int // index into devs
-		key string
-		t   Totals
+		idx    int // index into devs
+		key    string
+		t      Totals
+		scored *scoredMetrics
 	}
 	var actives []active
 	for i, id := range devs {
@@ -184,11 +203,11 @@ func applyEloPeriod(
 		if key == "" {
 			continue
 		}
-		t := periodTotals(data, id, start, end)
+		t, scored := periodTotals(data, id, start, end, iw)
 		if !hasAnyActivity(t) {
 			continue
 		}
-		actives = append(actives, active{idx: i, key: key, t: t})
+		actives = append(actives, active{idx: i, key: key, t: t, scored: scored})
 	}
 	if len(actives) == 0 {
 		return nil
@@ -199,7 +218,7 @@ func applyEloPeriod(
 	// so we can reuse computeContributorScores directly.
 	mini := make([]DevWindowMetrics, len(actives))
 	for i, a := range actives {
-		mini[i] = DevWindowMetrics{Dev: devs[a.idx], Totals: a.t}
+		mini[i] = DevWindowMetrics{Dev: devs[a.idx], Totals: a.t, scored: a.scored}
 	}
 	mini = computeContributorScores(mini, scoring.Weights, scoring.Normalize)
 
@@ -370,6 +389,7 @@ func advanceRatings(
 	start, end cache.Month,
 	scoring config.ScoringConfig,
 	now time.Time,
+	iw prIntegrationWeight,
 ) (string, error) {
 	periods, err := completedPeriodsBetween(start, end, now)
 	if err != nil {
@@ -393,7 +413,7 @@ func advanceRatings(
 		rt.Devs = map[string]cache.DevRatingState{}
 	}
 	for _, p := range periods {
-		if err := applyEloPeriod(rt.Devs, devs, data, p, scoring); err != nil {
+		if err := applyEloPeriod(rt.Devs, devs, data, p, scoring, iw); err != nil {
 			return "", fmt.Errorf("apply period %s: %w", p, err)
 		}
 		rt.LastPeriod = p

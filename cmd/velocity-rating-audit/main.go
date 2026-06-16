@@ -45,10 +45,16 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "snapshot":
-		if len(os.Args) != 3 {
+		if len(os.Args) < 3 {
 			usage()
 		}
-		err = snapshotCmd(os.Args[2])
+		integration := false
+		for _, a := range os.Args[3:] {
+			if a == "--integration" {
+				integration = true
+			}
+		}
+		err = snapshotCmd(os.Args[2], integration)
 	case "diff":
 		if len(os.Args) < 4 {
 			usage()
@@ -73,7 +79,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  velocity-rating-audit snapshot <out.json>")
+	fmt.Fprintln(os.Stderr, "  velocity-rating-audit snapshot <out.json> [--integration]")
 	fmt.Fprintln(os.Stderr, "  velocity-rating-audit diff <baseline.json> <candidate.json> [--expect expectations.json]")
 	os.Exit(2)
 }
@@ -98,7 +104,7 @@ type snapshot struct {
 	Devs        []devRow `json:"devs"`
 }
 
-func snapshotCmd(out string) error {
+func snapshotCmd(out string, enableIntegration bool) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -109,10 +115,18 @@ func snapshotCmd(out string) error {
 	}
 	defer store.Close()
 
+	// In-memory profile override so the OFF→ON comparison needs no config edit
+	// and never persists (NoPersist below). The composite and Elo paths share
+	// the same weighter built from this profile, so both axes reflect the flag.
+	profile := cfg.ActiveProfile()
+	if enableIntegration {
+		profile.Scoring.Integration.Enabled = true
+	}
+
 	// Rebuild + NoPersist: walk every period in memory from a clean slate,
 	// never writing ratings.json.
 	res, err := analyze.Run(analyze.Options{
-		Profile:   cfg.ActiveProfile(),
+		Profile:   profile,
 		Now:       time.Now(),
 		Rebuild:   true,
 		NoPersist: true,

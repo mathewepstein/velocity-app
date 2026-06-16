@@ -18,10 +18,10 @@ func TestStatusDurationHours(t *testing.T) {
 		DoneAt: &done,
 		Changelog: []cache.StatusTransition{
 			st("2026-01-01T00:00:00Z", "Selected for Development", "In Progress"), // 24h In Progress
-			st("2026-01-02T00:00:00Z", "In Progress", "Ready QA"),                  // 12h Ready QA
-			st("2026-01-02T12:00:00Z", "Ready QA", "In QA"),                        // 12h In QA
-			st("2026-01-03T00:00:00Z", "In QA", "In Progress"),                     // bounce; 12h In Progress (re-entry)
-			st("2026-01-03T12:00:00Z", "In Progress", "In QA"),                     // 12h In QA (re-entry) → to DoneAt
+			st("2026-01-02T00:00:00Z", "In Progress", "Ready QA"),                 // 12h Ready QA
+			st("2026-01-02T12:00:00Z", "Ready QA", "In QA"),                       // 12h In QA
+			st("2026-01-03T00:00:00Z", "In QA", "In Progress"),                    // bounce; 12h In Progress (re-entry)
+			st("2026-01-03T12:00:00Z", "In Progress", "In QA"),                    // 12h In QA (re-entry) → to DoneAt
 		},
 	}
 	dur := statusDurationHours(iss)
@@ -41,7 +41,7 @@ func TestStatusDurationHours(t *testing.T) {
 func TestStatusDurationHoursOpenIssue(t *testing.T) {
 	iss := cache.JiraIssue{
 		Changelog: []cache.StatusTransition{
-			st("2026-01-01T00:00:00Z", "Open", "In Progress"), // 24h
+			st("2026-01-01T00:00:00Z", "Open", "In Progress"),  // 24h
 			st("2026-01-02T00:00:00Z", "In Progress", "In QA"), // open-ended → not counted
 		},
 	}

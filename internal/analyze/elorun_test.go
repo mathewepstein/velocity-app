@@ -71,7 +71,7 @@ func TestApplyEloPeriodJiraOnlyDevDoesNotPlay(t *testing.T) {
 		Weights:        map[string]float64{"prs_merged": 3.0, "jira_issues_resolved": 2.0},
 		EloMarginScale: 1.0,
 	}
-	if err := applyEloPeriod(state, devs, data, period, scoring); err != nil {
+	if err := applyEloPeriod(state, devs, data, period, scoring, nil); err != nil {
 		t.Fatalf("applyEloPeriod: %v", err)
 	}
 	if _, ok := state["acct-newbie"]; ok {
@@ -95,7 +95,7 @@ func TestPeriodTotalsResolutionIsAssigneeOnly(t *testing.T) {
 		},
 	}
 	carol := config.DevIdentity{JiraAccountID: "acct-carol"}
-	tot := periodTotals(data, carol, start, end)
+	tot, _ := periodTotals(data, carol, start, end, nil)
 	// She reported it (touched + created credit) but did not resolve it.
 	if tot.JiraIssuesTouched != 1 {
 		t.Errorf("carol touched = %d, want 1 (reporter)", tot.JiraIssuesTouched)
@@ -125,7 +125,7 @@ func TestApplyEloPeriodSkipsIdleDevs(t *testing.T) {
 		Weights:        map[string]float64{"prs_merged": 3.0},
 		EloMarginScale: 1.0,
 	}
-	if err := applyEloPeriod(state, devs, data, period, scoring); err != nil {
+	if err := applyEloPeriod(state, devs, data, period, scoring, nil); err != nil {
 		t.Fatalf("applyEloPeriod: %v", err)
 	}
 	if _, ok := state["gh:bob"]; ok {
@@ -159,7 +159,7 @@ func TestApplyEloPeriodSoloDevDrawsAtHalf(t *testing.T) {
 	}
 	state := map[string]cache.DevRatingState{}
 	scoring := config.ScoringConfig{KTiers: []config.KTier{{MinPeriods: 0, K: 32}, {MinPeriods: 6, K: 16}}, Weights: map[string]float64{"prs_merged": 3.0}, EloMarginScale: 1.0}
-	if err := applyEloPeriod(state, devs, data, period, scoring); err != nil {
+	if err := applyEloPeriod(state, devs, data, period, scoring, nil); err != nil {
 		t.Fatalf("applyEloPeriod: %v", err)
 	}
 	alice := state["gh:alice"]
@@ -198,7 +198,7 @@ func TestApplyEloPeriodRewardsTopAndPenalizesBottom(t *testing.T) {
 	}
 	state := map[string]cache.DevRatingState{}
 	scoring := config.ScoringConfig{KTiers: []config.KTier{{MinPeriods: 0, K: 32}, {MinPeriods: 6, K: 16}}, Weights: map[string]float64{"prs_merged": 3.0}, EloMarginScale: 1.0}
-	if err := applyEloPeriod(state, devs, data, period, scoring); err != nil {
+	if err := applyEloPeriod(state, devs, data, period, scoring, nil); err != nil {
 		t.Fatalf("applyEloPeriod: %v", err)
 	}
 	alice := state["gh:alice"]
@@ -254,7 +254,7 @@ func TestApplyEloPeriodDampensProvisionalLosses(t *testing.T) {
 			ProvisionalUntilPeriods: 12,
 			ProvisionalLossFactor:   factor,
 		}
-		if err := applyEloPeriod(state, devs, buildData(), period, scoring); err != nil {
+		if err := applyEloPeriod(state, devs, buildData(), period, scoring, nil); err != nil {
 			t.Fatalf("applyEloPeriod(factor=%v): %v", factor, err)
 		}
 		return state["gh:alice"].History[0].Delta, state["gh:bob"].History[0].Delta
@@ -314,7 +314,7 @@ func TestAdvanceRatingsSkipsAlreadyAppliedPeriods(t *testing.T) {
 	scoring := config.ScoringConfig{KTiers: []config.KTier{{MinPeriods: 0, K: 32}, {MinPeriods: 6, K: 16}}, Weights: map[string]float64{"prs_merged": 3.0}, EloMarginScale: 1.0}
 	// "Now" past P21 end (2024-06-02).
 	now := time.Date(2024, 6, 10, 0, 0, 0, 0, time.UTC)
-	last, err := advanceRatings(rt, devs, data, cache.MustParseMonth("2024-05"), cache.MustParseMonth("2024-06"), scoring, now)
+	last, err := advanceRatings(rt, devs, data, cache.MustParseMonth("2024-05"), cache.MustParseMonth("2024-06"), scoring, now, nil)
 	if err != nil {
 		t.Fatalf("advanceRatings: %v", err)
 	}
@@ -362,7 +362,7 @@ func TestIdleDecayBeginsAfterN(t *testing.T) {
 	state := map[string]cache.DevRatingState{
 		"gh:alice": {Current: 1100, PeriodsPlayed: 10, IdleStreak: 3},
 	}
-	if err := applyEloPeriod(state, devs, data, period, idleDecayScoring()); err != nil {
+	if err := applyEloPeriod(state, devs, data, period, idleDecayScoring(), nil); err != nil {
 		t.Fatalf("applyEloPeriod: %v", err)
 	}
 	alice := state["gh:alice"]
@@ -393,7 +393,7 @@ func TestIdleDecayDoesNotFireDuringGracePeriod(t *testing.T) {
 	state := map[string]cache.DevRatingState{
 		"gh:alice": {Current: 1100, PeriodsPlayed: 10, IdleStreak: 2},
 	}
-	if err := applyEloPeriod(state, devs, data, period, idleDecayScoring()); err != nil {
+	if err := applyEloPeriod(state, devs, data, period, idleDecayScoring(), nil); err != nil {
 		t.Fatalf("applyEloPeriod: %v", err)
 	}
 	alice := state["gh:alice"]
@@ -431,7 +431,7 @@ func TestIdleDecayPullsTowardTeamMean(t *testing.T) {
 		"gh:alice": {Current: 1100, PeriodsPlayed: 10, IdleStreak: 5},
 		"gh:carol": {Current: 900, PeriodsPlayed: 10, IdleStreak: 5},
 	}
-	if err := applyEloPeriod(state, devs, data, period, idleDecayScoring()); err != nil {
+	if err := applyEloPeriod(state, devs, data, period, idleDecayScoring(), nil); err != nil {
 		t.Fatalf("applyEloPeriod: %v", err)
 	}
 	alice := state["gh:alice"]
@@ -468,7 +468,7 @@ func TestIdleDecayClampsAtTeamMean(t *testing.T) {
 	state := map[string]cache.DevRatingState{
 		"gh:alice": {Current: 1003, PeriodsPlayed: 10, IdleStreak: 5},
 	}
-	if err := applyEloPeriod(state, devs, data, period, idleDecayScoring()); err != nil {
+	if err := applyEloPeriod(state, devs, data, period, idleDecayScoring(), nil); err != nil {
 		t.Fatalf("applyEloPeriod: %v", err)
 	}
 	alice := state["gh:alice"]
@@ -496,7 +496,7 @@ func TestIdleDecayActivityResetsStreak(t *testing.T) {
 	state := map[string]cache.DevRatingState{
 		"gh:alice": {Current: 1100, PeriodsPlayed: 10, IdleStreak: 5},
 	}
-	if err := applyEloPeriod(state, devs, data, period, idleDecayScoring()); err != nil {
+	if err := applyEloPeriod(state, devs, data, period, idleDecayScoring(), nil); err != nil {
 		t.Fatalf("applyEloPeriod: %v", err)
 	}
 	alice := state["gh:alice"]
@@ -527,7 +527,7 @@ func TestIdleDecaySkipsOrphans(t *testing.T) {
 	state := map[string]cache.DevRatingState{
 		"gh:charlie": {Current: 1100, PeriodsPlayed: 10, IdleStreak: 5},
 	}
-	if err := applyEloPeriod(state, devs, data, period, idleDecayScoring()); err != nil {
+	if err := applyEloPeriod(state, devs, data, period, idleDecayScoring(), nil); err != nil {
 		t.Fatalf("applyEloPeriod: %v", err)
 	}
 	charlie := state["gh:charlie"]

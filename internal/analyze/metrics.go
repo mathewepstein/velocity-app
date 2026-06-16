@@ -283,7 +283,15 @@ func computeCodeImpact(uniqueFiles, locDelta, mergedPRs int, ci config.CodeImpac
 // contribute fractionally per Phase 6.2) can flow in without rounding. The
 // formula is identical otherwise.
 func computeCodeImpactFloat(effectiveFiles, locDelta float64, mergedPRs int, ci config.CodeImpactConfig) float64 {
-	sum := ci.Alpha*effectiveFiles + ci.Beta*locDelta + ci.Gamma*float64(mergedPRs)
+	return codeImpactFormula(effectiveFiles, locDelta, float64(mergedPRs), ci)
+}
+
+// codeImpactFormula is the underlying `sqrt(α·F + β·L + γ·P)` with a float P
+// term, so the γ·merged input can carry the integration-down-weighted merged
+// count (a flagged PR contributes its factor, not a whole 1). computeCodeImpactFloat
+// is the int-P wrapper for callers that don't down-weight.
+func codeImpactFormula(effectiveFiles, locDelta, mergedPRs float64, ci config.CodeImpactConfig) float64 {
+	sum := ci.Alpha*effectiveFiles + ci.Beta*locDelta + ci.Gamma*mergedPRs
 	if sum <= 0 {
 		return 0
 	}

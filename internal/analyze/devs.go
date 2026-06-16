@@ -256,7 +256,7 @@ func filterUnmapped(data *Loaded, devs []config.DevIdentity) *Loaded {
 // every GitHub login matches an exclude pattern is skipped; unmapped records
 // whose author/reviewer matches are dropped before they reach the "unknown"
 // bucket.
-func buildDevWindows(data *Loaded, devIDs []config.DevIdentity, excludes, excludedRoles []string, start, end, fullStart, fullEnd cache.Month, ci config.CodeImpactConfig, norm config.NormalizeConfig) []DevWindowMetrics {
+func buildDevWindows(data *Loaded, devIDs []config.DevIdentity, excludes, excludedRoles []string, start, end, fullStart, fullEnd cache.Month, ci config.CodeImpactConfig, norm config.NormalizeConfig, iw prIntegrationWeight) []DevWindowMetrics {
 	out := make([]DevWindowMetrics, 0, len(devIDs)+1)
 	activity := activityCountsByLogin(data)
 	// Corpus-wide file churn index for the optional churn-weighting knob. Built
@@ -273,7 +273,7 @@ func buildDevWindows(data *Loaded, devIDs []config.DevIdentity, excludes, exclud
 		if devExcluded(id, excludes) || config.RoleExcluded(id.EffectiveRole(), excludedRoles) {
 			continue
 		}
-		w := buildOneDev(data, id, start, end, fullStart, fullEnd, churn, ci, norm)
+		w := buildOneDev(data, id, start, end, fullStart, fullEnd, churn, ci, norm, iw)
 		w.PrimaryLogin = devs.PrimaryLogin(id, activity)
 		out = append(out, w)
 	}
@@ -281,7 +281,7 @@ func buildDevWindows(data *Loaded, devIDs []config.DevIdentity, excludes, exclud
 	unknown := filterUnmapped(data, devIDs)
 	unknown = dropExcludedAuthors(unknown, excludes)
 	if hasAny(unknown) {
-		out = append(out, buildOneDev(unknown, unknownIdentity, start, end, fullStart, fullEnd, churn, ci, norm))
+		out = append(out, buildOneDev(unknown, unknownIdentity, start, end, fullStart, fullEnd, churn, ci, norm, iw))
 	}
 	return out
 }
@@ -358,7 +358,7 @@ func dropExcludedAuthors(data *Loaded, patterns []string) *Loaded {
 	return out
 }
 
-func buildOneDev(data *Loaded, id config.DevIdentity, start, end, fullStart, fullEnd cache.Month, churn map[string]int, ci config.CodeImpactConfig, norm config.NormalizeConfig) DevWindowMetrics {
+func buildOneDev(data *Loaded, id config.DevIdentity, start, end, fullStart, fullEnd cache.Month, churn map[string]int, ci config.CodeImpactConfig, norm config.NormalizeConfig, iw prIntegrationWeight) DevWindowMetrics {
 	scoped := data
 	if len(id.AllGitHubLogins()) > 0 || id.JiraAccountID != "" {
 		scoped = filterForDev(data, id)
@@ -396,12 +396,25 @@ func buildOneDev(data *Loaded, id config.DevIdentity, start, end, fullStart, ful
 	// Per Phase 6.2: code_impact uses the generated-file-dampened cardinality,
 	// not the raw count, so dependency dumps don't pad the substance score.
 	// Raw int cardinality stays on Totals.UniqueFilesTouched for display.
-	effFiles := effectiveUniqueFilesInWindow(scoped, start, end, norm, ci)
+	effFiles := effectiveUniqueFilesInWindow(scoped, start, end, norm, ci, iw)
 	// effLOC equals LOCAdded+LOCDeleted when both code_impact knobs are off, so
 	// default behavior is unchanged; churn-weighting / bulk-import dampening only
-	// diverge it when explicitly enabled.
-	effLOC := effectiveLOCInWindow(scoped, start, end, churn, ci)
-	totals.CodeImpact = computeCodeImpactFloat(effFiles, effLOC, totals.PRsMerged, ci)
+	// diverge it when explicitly enabled. effFiles/effLOC are also integration-
+	// down-weighted (via iw) when the feature is on.
+	effLOC := effectiveLOCInWindow(scoped, start, end, churn, ci, iw)
+	// Integration scoring (iw != nil): stash the down-weighted prs_*/loc inputs
+	// for computeContributorScores and use the down-weighted merged count for the
+	// γ·merged term of code_impact. When iw is nil, scored stays nil and the raw
+	// merged count is used — byte-identical to the pre-feature path.
+	var scored *scoredMetrics
+	mergedForImpact := float64(totals.PRsMerged)
+	if iw != nil {
+		sm, flagged := scopedIntegrationScoring(scoped, start, end, iw)
+		scored = &sm
+		mergedForImpact = sm.prsMerged
+		totals.IntegrationPRs = flagged
+	}
+	totals.CodeImpact = codeImpactFormula(effFiles, effLOC, mergedForImpact, ci)
 	var fullHistory []MonthlyRow
 	if fullStart.Before(start) || fullStart.Equal(start) {
 		fullHistory = rollupMonthly(scoped, fullStart, fullEnd, ci)
@@ -420,6 +433,7 @@ func buildOneDev(data *Loaded, id config.DevIdentity, start, end, fullStart, ful
 		MedianCycleHours:   medianCycleHoursInWindow(scoped, start, end),
 		effectiveFiles:     effFiles,
 		effectiveLOC:       effLOC,
+		scored:             scored,
 	}
 }
 
@@ -463,10 +477,17 @@ func applyCodeImpactCap(devs []DevWindowMetrics, ci config.CodeImpactConfig) {
 		if loc > cap95 {
 			loc = cap95
 		}
-		devs[di].Totals.CodeImpact = computeCodeImpactFloat(
+		// γ·merged uses the integration-down-weighted merged count when present
+		// (scored, set in buildOneDev), else the raw count — matching how effLOC
+		// above is already down-weighted in the effective* walks.
+		merged := float64(devs[di].Totals.PRsMerged)
+		if devs[di].scored != nil {
+			merged = devs[di].scored.prsMerged
+		}
+		devs[di].Totals.CodeImpact = codeImpactFormula(
 			devs[di].effectiveFiles,
 			loc,
-			devs[di].Totals.PRsMerged,
+			merged,
 			ci,
 		)
 	}

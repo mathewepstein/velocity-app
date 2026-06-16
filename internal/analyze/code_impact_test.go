@@ -11,9 +11,9 @@ import (
 func TestComputeCodeImpactFormula(t *testing.T) {
 	ci := config.CodeImpactConfig{Alpha: 1, Beta: 0.5, Gamma: 2}
 	cases := []struct {
-		name                          string
-		files, loc, merged            int
-		want                          float64
+		name               string
+		files, loc, merged int
+		want               float64
 	}{
 		{"all-zero", 0, 0, 0, 0},
 		{"only-files", 16, 0, 0, 4},                // sqrt(16) = 4
@@ -125,4 +125,3 @@ func TestRollupMonthlyPopulatesUniqueFilesAndCodeImpact(t *testing.T) {
 		t.Errorf("Feb code_impact = %v, want 0", rows[1].CodeImpact)
 	}
 }
-

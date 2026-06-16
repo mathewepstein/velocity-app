@@ -44,8 +44,8 @@ func TestChurnWeightRamp(t *testing.T) {
 		touches int
 		want    float64
 	}{
-		{0, 0.5},   // never-touched falls to the floor
-		{1, 0.5},   // touched once = boilerplate floor
+		{0, 0.5}, // never-touched falls to the floor
+		{1, 0.5}, // touched once = boilerplate floor
 		{2, 0.5 + (1.0/3.0)*0.5},
 		{3, 0.5 + (2.0/3.0)*0.5},
 		{4, 1.0}, // reaches full weight at ChurnFullAt
@@ -133,7 +133,7 @@ func TestEffectivePRLOCChurnOnly(t *testing.T) {
 		Additions: 300, Deletions: 0,
 		FileChanges: []cache.FileChange{
 			{Path: "boiler.go", Additions: 200}, // touched once → floor 0.5
-			{Path: "hot.go", Additions: 100},     // touched a lot → 1.0
+			{Path: "hot.go", Additions: 100},    // touched a lot → 1.0
 		},
 	}
 	churn := map[string]int{"boiler.go": 1, "hot.go": 9}
@@ -164,7 +164,7 @@ func TestEffectiveLOCInWindowDefaultEqualsRaw(t *testing.T) {
 	start := cache.MustParseMonth("2026-01")
 	end := cache.MustParseMonth("2026-04")
 	// Only PRs 1 + 2 count: (120) + (200) = 320.
-	if got := effectiveLOCInWindow(data, start, end, nil, ci); got != 320 {
+	if got := effectiveLOCInWindow(data, start, end, nil, ci, nil); got != 320 {
 		t.Errorf("default effectiveLOCInWindow = %v, want 320 (raw merged-in-window sum)", got)
 	}
 }
@@ -279,7 +279,7 @@ func TestEffectiveUniqueFilesDumpDampened(t *testing.T) {
 	start := cache.MustParseMonth("2026-01")
 	end := cache.MustParseMonth("2026-04")
 	// Dump json files → 0 weight; the two .go files → 1.0 each = 2.0.
-	if got := effectiveUniqueFilesInWindow(data, start, end, norm, ci); math.Abs(got-2.0) > 1e-9 {
+	if got := effectiveUniqueFilesInWindow(data, start, end, norm, ci, nil); math.Abs(got-2.0) > 1e-9 {
 		t.Errorf("dump data files should be dampened out of the file count, got %v (want 2.0)", got)
 	}
 }

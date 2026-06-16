@@ -170,7 +170,7 @@ func TestBuildDevWindowsSplitsAcrossDevsPlusUnknown(t *testing.T) {
 	start := cache.MustParseMonth("2026-01")
 	end := cache.MustParseMonth("2026-04")
 
-	got := buildDevWindows(data, devs, nil, nil,start, end, start, end, testCI(), testNorm())
+	got := buildDevWindows(data, devs, nil, nil, start, end, start, end, testCI(), testNorm(), nil)
 	if len(got) != 3 {
 		t.Fatalf("expected 3 buckets (alice, bob, unknown), got %d", len(got))
 	}
@@ -233,7 +233,7 @@ func TestBuildDevWindowsOmitsUnknownWhenEmpty(t *testing.T) {
 	devs := []config.DevIdentity{
 		{GitHubLogin: "alice", DisplayName: "Alice"},
 	}
-	got := buildDevWindows(data, devs, nil, nil,cache.MustParseMonth("2026-01"), cache.MustParseMonth("2026-01"), cache.MustParseMonth("2026-01"), cache.MustParseMonth("2026-01"), testCI(), testNorm())
+	got := buildDevWindows(data, devs, nil, nil, cache.MustParseMonth("2026-01"), cache.MustParseMonth("2026-01"), cache.MustParseMonth("2026-01"), cache.MustParseMonth("2026-01"), testCI(), testNorm(), nil)
 	if len(got) != 1 {
 		t.Errorf("expected 1 bucket (no unknown), got %d", len(got))
 	}
@@ -252,7 +252,7 @@ func TestBuildDevWindowsDropsExcludedAuthorsFromUnknown(t *testing.T) {
 	start := cache.MustParseMonth("2026-01")
 	end := cache.MustParseMonth("2026-04")
 
-	got := buildDevWindows(data, devs, excludes, nil,start, end, start, end, testCI(), testNorm())
+	got := buildDevWindows(data, devs, excludes, nil, start, end, start, end, testCI(), testNorm(), nil)
 
 	var unknown *DevWindowMetrics
 	for i := range got {
@@ -286,7 +286,7 @@ func TestBuildDevWindowsSkipsExcludedDev(t *testing.T) {
 	start := cache.MustParseMonth("2026-01")
 	end := cache.MustParseMonth("2026-04")
 
-	got := buildDevWindows(data, devs, excludes, nil,start, end, start, end, testCI(), testNorm())
+	got := buildDevWindows(data, devs, excludes, nil, start, end, start, end, testCI(), testNorm(), nil)
 
 	for _, d := range got {
 		if d.Dev.DisplayName == "Bob" {

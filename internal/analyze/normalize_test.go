@@ -126,7 +126,7 @@ func TestEffortMultiplierFloor(t *testing.T) {
 	// Aggressive penalties + an extreme dev — multiplier must clamp at 0.5.
 	cfg := config.NormalizeConfig{
 		SpamThreshold:   1.0,
-		SpamPenalty:     2.0,  // huge penalty
+		SpamPenalty:     2.0, // huge penalty
 		StuffPenalty:    2.0,
 		MultiplierFloor: 0.5,
 	}

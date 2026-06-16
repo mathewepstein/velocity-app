@@ -17,7 +17,7 @@ type CodeImpactRow struct {
 	EffectiveLOC float64 // post-dampening L input to code_impact
 	CodeImpact   float64 // post-cap code_impact metric (the scored value)
 	Composite    float64 // composite score total (0 when the dev is unscored)
-	Rank         int      // composite rank, 1-indexed (0 when unscored)
+	Rank         int     // composite rank, 1-indexed (0 when unscored)
 	Scored       bool
 }
 
@@ -64,7 +64,8 @@ func CohortForCurrentWindow(opts Options) ([]DevWindowMetrics, WindowMetrics, er
 	curStart, _ := cache.ParseMonth(curWin.Window.Start)
 	curEnd, _ := cache.ParseMonth(curWin.Window.End)
 
-	devs := buildDevWindows(data, opts.Profile.Devs, opts.Profile.Scoring.EffectiveExcludes(), opts.Profile.Scoring.ExcludedRoles, curStart, curEnd, backfillStart, current, ci, norm)
+	integWeight := newIntegrationWeighter(data, opts.Profile.Scoring.Integration)
+	devs := buildDevWindows(data, opts.Profile.Devs, opts.Profile.Scoring.EffectiveExcludes(), opts.Profile.Scoring.ExcludedRoles, curStart, curEnd, backfillStart, current, ci, norm, integWeight)
 	applyCodeImpactCap(devs, ci)
 	devs = computeContributorScores(devs, opts.Profile.Scoring.Weights, norm)
 	return devs, curWin, nil

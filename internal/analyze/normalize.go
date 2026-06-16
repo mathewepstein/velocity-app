@@ -99,7 +99,7 @@ func globCore(glob string) string {
 // the union of file paths across every merged PR in [start, end]. Used as
 // the F input to code_impact at window scope. Mirrors uniqueFilesInWindow's
 // PR walk so the two stay in lock-step.
-func effectiveUniqueFilesInWindow(data *Loaded, start, end cache.Month, cfg config.NormalizeConfig, ci config.CodeImpactConfig) float64 {
+func effectiveUniqueFilesInWindow(data *Loaded, start, end cache.Month, cfg config.NormalizeConfig, ci config.CodeImpactConfig, iw prIntegrationWeight) float64 {
 	// Per-path weight: a file in a detected bulk-data dump contributes
 	// ci.DumpWeight, a generated-pattern file contributes GeneratedFileWeight,
 	// everything else 1.0. A path seen in multiple PRs keeps its least-dampened
@@ -110,10 +110,15 @@ func effectiveUniqueFilesInWindow(data *Loaded, start, end cache.Month, cfg conf
 			continue
 		}
 		dump := !ci.DisableDumpDampening && isBulkDataDump(fileChangePaths(p), ci)
+		// Integration down-weight scales this PR's per-file contribution. Kept
+		// under the max-across-PRs rule below: a file also touched by a real
+		// feature PR (weight 1.0) keeps its full weight — only files reached
+		// solely through integration merges are dampened.
+		integ := iw.weightFor(p)
 		for _, f := range p.Files {
-			w := genFileWeight(f, cfg)
+			w := genFileWeight(f, cfg) * integ
 			if dump && isDumpDataExt(extLower(f)) {
-				w = ci.DumpWeight
+				w = ci.DumpWeight * integ
 			}
 			if cur, ok := weights[f]; !ok || w > cur {
 				weights[f] = w

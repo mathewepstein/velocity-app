@@ -372,6 +372,41 @@ type ScoringConfig struct {
 	// matching is case-insensitive. This is the org-portable replacement for
 	// hardcoding non-dev people into the GitHub-login Exclude list.
 	ExcludedRoles []string `toml:"excluded_roles"`
+
+	// Integration down-weights merge-up / integration PRs (development→master,
+	// release/*→main, etc.) so re-shipped already-merged commits don't double-
+	// count as authored work. OFF by default.
+	Integration IntegrationConfig `toml:"integration"`
+}
+
+// IntegrationConfig parameterises integration-PR down-weighting in scoring. It
+// is plain config data (no dependency on internal/integration, to avoid an
+// import cycle); the analyze package converts it into the classifier's own
+// Config. When Enabled is false (the default) the whole feature is inert and
+// scoring is byte-identical to a config without this block — mirrors the
+// churn/bulk-import code_impact toggles.
+//
+// A detected integration PR contributes Factor (default 0.25) instead of 1.0 to
+// the scored prs_created / prs_merged / loc_changed / code_impact inputs, at
+// BOTH the composite and Elo paths. Displayed raw counts are unaffected; a
+// separate display-only integration_prs surfaces the flagged count.
+type IntegrationConfig struct {
+	Enabled   bool    `toml:"enabled"`
+	Factor    float64 `toml:"factor"`    // scored contribution of a flagged PR (0,1]; default 0.25
+	Threshold float64 `toml:"threshold"` // classifier score at/above which a PR is flagged; default 0.50
+
+	// Structural tunables (optional; zero-values fall back to the classifier
+	// defaults in the analyze-side converter).
+	BigDiffLOC        int      `toml:"big_diff_loc"`        // additions+deletions floor for the big-diff-no-review signal
+	ManyKeysCutoff    int      `toml:"many_keys_cutoff"`    // distinct-key count read as a release bundle
+	LongLivedBranches []string `toml:"long_lived_branches"` // integration branches (overrides the default set when non-empty)
+	TitlePatterns     []string `toml:"title_patterns"`      // optional org-specific title nudges (low weight)
+
+	// Weights optionally overrides individual signal weights by name (reship,
+	// author_diversity, merge_commits, no_review, key_shape, big_diff_no_review,
+	// base_head_long, keyless_into_long, title_hint). Unset keys keep the
+	// classifier default. Lets an org retune without a code change.
+	Weights map[string]float64 `toml:"weights"`
 }
 
 // CodeImpactConfig parameterises the `code_impact` composite metric. The
@@ -737,6 +772,13 @@ func DefaultScoringConfig() ScoringConfig {
 		ProvisionalLossFactor:   0.5,
 		ExcludedRoles:           []string{"qa", "exec", "excluded"},
 		PeriodWeeks:             2,
+		// Integration down-weighting ships OFF; factor/threshold carry the
+		// Phase-A-locked values so enabling it needs only `enabled = true`.
+		Integration: IntegrationConfig{
+			Enabled:   false,
+			Factor:    0.25,
+			Threshold: 0.50,
+		},
 	}
 }
 
@@ -1057,6 +1099,17 @@ func (c *Config) applyDefaults() {
 	}
 	if p.Scoring.ExcludedRoles == nil {
 		p.Scoring.ExcludedRoles = defaults.Scoring.ExcludedRoles
+	}
+	// Integration block: fill factor/threshold when unset so enabling the
+	// feature needs only `enabled = true`. `Enabled` has no fill — its false
+	// zero-value is the intended default (feature off). Structural tunables and
+	// weights have no fill either; the analyze-side converter supplies the
+	// classifier defaults for any zero/empty field.
+	if p.Scoring.Integration.Factor == 0 {
+		p.Scoring.Integration.Factor = defaults.Scoring.Integration.Factor
+	}
+	if p.Scoring.Integration.Threshold == 0 {
+		p.Scoring.Integration.Threshold = defaults.Scoring.Integration.Threshold
 	}
 	// CodeImpact coefficients fill in field-by-field so a user can override
 	// one without re-declaring all three.

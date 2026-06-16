@@ -15,7 +15,7 @@
   'use strict';
 
   const { escapeHTML, formatNumber, fmtDays, shiftMonth, monthDelta, clampMonth,
-          setActive } = window.VUtil;
+          setActive, jiraBrowseURL, chartLoading } = window.VUtil;
   const { clearSVG, drawLineSeries, legend } = window.VChart;
 
   // Flow metrics double as the clickable stat cards and the chart series.
@@ -32,14 +32,19 @@
   const state = {
     data:        null,
     claudeCut:   null,    // windowed Claude-attribution cut from /api/team/flow (follows flowRange)
+    qaCut:       null,    // windowed QA/cycle rollup from /api/team/flow (follows flowRange)
     flowRange:   '12m',   // '6m' | '12m' | '24m' | 'all'
     flowCompare: 'none',  // 'none' | 'prev' | 'yoy'
     flowMetric:  'issues_resolved',
+    claudeView:  'resolved', // 'resolved' (count) | 'cycle' (median cycle time, Claude vs other)
     risingOnly: false,
   };
 
   // ---- Boot ----
+  const CHARTS = ['flow-chart', 'claude-chart'];
+
   async function boot() {
+    CHARTS.forEach(id => chartLoading(id, true));
     try {
       const res = await fetch('/metrics.json', { cache: 'no-store' });
       if (!res.ok) throw new Error(res.statusText);
@@ -48,6 +53,7 @@
       console.error(err);
       document.getElementById('loading').hidden = true;
       document.getElementById('error').hidden = false;
+      CHARTS.forEach(id => chartLoading(id, false));
       return;
     }
     document.getElementById('loading').hidden = true;
@@ -57,6 +63,7 @@
     // frozen current-window cut, so the page still renders.
     await loadClaudeCut();
     renderAll();
+    CHARTS.forEach(id => chartLoading(id, false));
   }
 
   // loadClaudeCut fetches the Claude-attribution cut for the current flow
@@ -71,9 +78,10 @@
       if (!res.ok) throw new Error(res.statusText);
       const flow = await res.json();
       state.claudeCut = flow.claude || null;
+      state.qaCut = flow.qa || null;
     } catch (err) {
       console.error(err);
-      // Leave state.claudeCut as-is; claudeCut() falls back to the blob cut.
+      // Leave state.claudeCut/qaCut as-is; the getters fall back to the blob.
     }
   }
 
@@ -83,16 +91,28 @@
     return state.claudeCut || (state.data.team_flow && state.data.team_flow.claude) || {};
   }
 
+  // The QA/cycle rollup to display: the windowed cut from /api/team/flow when
+  // available (follows the flow range), otherwise the blob's frozen
+  // current-window qa_flow.
+  function qaCut() {
+    return state.qaCut || state.data.qa_flow || {};
+  }
+
   function wireControls() {
     document.getElementById('flow-range').addEventListener('click', async (e) => {
       const btn = e.target.closest('button'); if (!btn) return;
       state.flowRange = btn.dataset.range;
       setActive('flow-range', btn);
       renderFlow();
-      // The Claude cut follows the flow range — re-fetch it server-side, then
-      // re-render that panel. Initiatives stay anchored to "now", so they
-      // don't re-render on a range change.
+      // The Claude cut and the QA/cycle rollup both follow the flow range —
+      // re-fetch them server-side, then re-render everything that reads the
+      // windowed cut (summary line, highlight tiles, Claude panel). Initiatives
+      // stay anchored to "now", so they don't re-render on a range change.
+      chartLoading('claude-chart', true);
       await loadClaudeCut();
+      chartLoading('claude-chart', false);
+      renderSummary();
+      renderHighlights();
       renderClaude();
     });
     document.getElementById('flow-compare').addEventListener('change', (e) => {
@@ -119,19 +139,20 @@
   function monthlyRows() { return (state.data.team_flow && state.data.team_flow.monthly) || []; }
 
   // ---- Summary ----
+  // Follows the flow range: the window + tiles below reflect the selected range
+  // (via the windowed /api/team/flow cut), not the frozen current window.
   function renderSummary() {
-    const s = state.data;
-    const cut = (s.team_flow && s.team_flow.claude) || {};
+    const cut = claudeCut();
     document.getElementById('vel-summary').textContent =
-      `Team-wide flow · current window ${cut.window_start || '?'} → ${cut.window_end || '?'} · cycle time, throughput, and Claude attribution`;
+      `Team-wide flow · ${cut.window_start || '?'} → ${cut.window_end || '?'} · cycle time, throughput, and Claude attribution`;
   }
 
   // ---- Macro highlight tiles ----
   function renderHighlights() {
     const el = document.getElementById('vel-highlights');
     el.innerHTML = '';
-    const cut = (state.data.team_flow && state.data.team_flow.claude) || {};
-    const qf = state.data.qa_flow || {};
+    const cut = claudeCut();
+    const qf = qaCut();
     const sharePct = cut.issues_resolved ? Math.round((cut.claude_issues_resolved / cut.issues_resolved) * 100) : 0;
     const tiles = [
       { label: 'Resolved (window)', value: formatNumber(cut.issues_resolved || 0) },
@@ -243,33 +264,77 @@
       const points = annotatePartial(metricSeries(metric, cmp), metric.key);
       if (points.length) overlay = { label: cmp.label, points };
     }
-    drawLineSeries(svg, series, { compact: true, overlay });
+    drawLineSeries(svg, series, { compact: true, overlay, tooltip: 'flow-tooltip' });
     legend('flow-legend', metric.label, overlay ? overlay.label : null, series[series.length - 1]);
   }
 
   // ---- Claude attribution ----
+  // The four stat cards double as a chart selector with two views: the count
+  // cards chart Claude-assisted vs all resolved over time; the cycle cards chart
+  // median cycle time (days) for Claude-assisted vs other tickets over time.
+  const CLAUDE_TILES = [
+    { key: 'assisted', view: 'resolved', label: 'Claude-assisted tickets',
+      value: c => `${formatNumber(c.claude_issues_resolved || 0)} / ${formatNumber(c.issues_resolved || 0)}` },
+    { key: 'share', view: 'resolved', label: 'Claude share',
+      value: c => `${c.issues_resolved ? Math.round((c.claude_issues_resolved / c.issues_resolved) * 100) : 0}%` },
+    { key: 'cycle_claude', view: 'cycle', label: 'Cycle — Claude',
+      value: c => fmtDays(c.median_cycle_hours_claude) },
+    { key: 'cycle_other', view: 'cycle', label: 'Cycle — other',
+      value: c => fmtDays(c.median_cycle_hours_other) },
+  ];
+
   function renderClaude() {
     const cut = claudeCut();
-    const sharePct = cut.issues_resolved ? Math.round((cut.claude_issues_resolved / cut.issues_resolved) * 100) : 0;
     document.getElementById('claude-meta').textContent =
-      `window ${cut.window_start || '?'} → ${cut.window_end || '?'}`;
+      `${cut.window_start || '?'} → ${cut.window_end || '?'} · click a card to switch the chart`;
 
     const el = document.getElementById('claude-stats');
     el.innerHTML = '';
-    el.appendChild(tile('Claude-assisted tickets', `${formatNumber(cut.claude_issues_resolved || 0)} / ${formatNumber(cut.issues_resolved || 0)}`));
-    el.appendChild(tile('Claude share', `${sharePct}%`));
-    el.appendChild(tile('Cycle — Claude', fmtDays(cut.median_cycle_hours_claude)));
-    el.appendChild(tile('Cycle — other', fmtDays(cut.median_cycle_hours_other)));
+    for (const t of CLAUDE_TILES) el.appendChild(claudeTile(t, cut));
 
-    // Trend: Claude-resolved vs all-resolved per month, full visible flow range.
+    renderClaudeChart();
+  }
+
+  function claudeTile(t, cut) {
+    const card = document.createElement('button');
+    card.className = 'stat metric-button' + (t.view === state.claudeView ? ' active' : '');
+    card.dataset.view = t.view;
+    card.innerHTML = `<div class="label">${escapeHTML(t.label)}</div><div class="value">${escapeHTML(String(t.value(cut)))}</div>`;
+    card.addEventListener('click', () => {
+      if (state.claudeView === t.view) return;
+      state.claudeView = t.view;
+      renderClaude();
+    });
+    return card;
+  }
+
+  // hours → median days, rounded to 0.1d; 0 stays 0 (drawn at baseline).
+  function cycleDays(hours) { return Math.round((hours || 0) / 24 * 10) / 10; }
+
+  function renderClaudeChart() {
     const win = flowWindow();
     const rows = sliceMonths(win.start, win.end);
-    const total = annotatePartial(rows.map(r => ({ label: r.month, value: r.issues_resolved || 0 })), 'issues_resolved');
-    const claude = annotatePartial(rows.map(r => ({ label: r.month, value: r.claude_issues_resolved || 0 })), 'claude_issues_resolved');
     const svg = document.getElementById('claude-chart');
     clearSVG(svg);
-    drawLineSeries(svg, total, { compact: true, overlay: { label: 'Claude-assisted', points: claude } });
-    legend('claude-legend', 'All resolved', 'Claude-assisted', total[total.length - 1]);
+
+    let main, overlay, mainLabel, overlayLabel;
+    if (state.claudeView === 'cycle') {
+      // Median cycle time (days) — Claude-assisted vs other. Medians don't
+      // accumulate, so use a non-cumulative key (no partial-month projection).
+      main = annotatePartial(rows.map(r => ({ label: r.month, value: cycleDays(r.median_cycle_hours_other) })), 'median_cycle_days');
+      const claude = annotatePartial(rows.map(r => ({ label: r.month, value: cycleDays(r.median_cycle_hours_claude) })), 'median_cycle_days');
+      overlay = { label: 'Claude (median d)', points: claude };
+      mainLabel = 'Other (median d)';
+      overlayLabel = 'Claude (median d)';
+    } else {
+      main = annotatePartial(rows.map(r => ({ label: r.month, value: r.issues_resolved || 0 })), 'issues_resolved');
+      const claude = annotatePartial(rows.map(r => ({ label: r.month, value: r.claude_issues_resolved || 0 })), 'claude_issues_resolved');
+      overlay = { label: 'Claude-assisted', points: claude };
+      mainLabel = 'All resolved';
+      overlayLabel = 'Claude-assisted';
+    }
+    drawLineSeries(svg, main, { compact: true, overlay, tooltip: 'claude-tooltip' });
+    legend('claude-legend', mainLabel, overlayLabel, main[main.length - 1]);
   }
 
   // ---- Initiatives / momentum (relocated from the home page) ----
@@ -297,6 +362,16 @@
     new: '▲', hot: '▲', rising: '▲', steady: '·', cooling: '▼',
   };
 
+  // Epic key as a Jira deep link when a base URL is configured, else plain
+  // text. Epic keys aren't anonymized, so this is safe in incognito too.
+  function epicKeyHTML(key) {
+    const url = jiraBrowseURL(key);
+    const safe = escapeHTML(key);
+    return url
+      ? `<a class="epic-link" href="${escapeHTML(url)}" target="_blank" rel="noopener">${safe}</a>`
+      : safe;
+  }
+
   function projectRow(p) {
     const row = document.createElement('div');
     row.className = 'project';
@@ -308,7 +383,7 @@
     // "new" epics have no baseline, so a ratio is meaningless — show the label.
     const momentum = dir === 'new' ? 'new' : `${(p.momentum || 0).toFixed(1)}x`;
     row.innerHTML = `
-      <span class="key">${escapeHTML(p.epic_key)}</span>
+      <span class="key">${epicKeyHTML(p.epic_key)}</span>
       <span class="summary">${summary}</span>
       <span class="momentum">${momentum}</span>
       <span class="direction dir-${dir}">${glyph} ${dir}</span>

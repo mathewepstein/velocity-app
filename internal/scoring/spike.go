@@ -15,10 +15,7 @@ import (
 // like any other BandResult so downstream (store, /score-ticket, the UI) is
 // unchanged. The "no PR" flag is suppressed — a spike legitimately has none.
 func bandSpike(ev *TicketEvidence, cfg config.StoryPointsConfig) BandResult {
-	scale := cfg.Scale
-	if len(scale) == 0 {
-		scale = []int{1, 2, 3, 5, 8, 13}
-	}
+	scale := EffectiveScale(cfg)
 	sc := cfg.Spike
 
 	cycleDays := cycleDays(ev)

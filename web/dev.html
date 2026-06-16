@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Velocity — Dev</title>
+  <meta name="jira-base" content="{{.JiraBaseURL}}" />
   <link rel="stylesheet" href="/dashboard.css" />
 </head>
 <body class="{{if .Incognito}}incognito{{end}}">
@@ -56,6 +57,7 @@
       <div class="chart-wrap">
         <svg id="trend-chart" viewBox="0 0 1200 320" preserveAspectRatio="none"></svg>
         <div class="tooltip" id="trend-tooltip"></div>
+        <div class="chart-loading" hidden><span class="chart-spinner"></span></div>
       </div>
       <div class="chart-legend">
         <span><span class="swatch current"></span>Current</span>
@@ -69,6 +71,7 @@
       <div class="chart-wrap">
         <svg id="elo-chart" viewBox="0 0 1200 240" preserveAspectRatio="none"></svg>
         <div class="tooltip" id="elo-tooltip"></div>
+        <div class="chart-loading" hidden><span class="chart-spinner"></span></div>
       </div>
     </section>
 

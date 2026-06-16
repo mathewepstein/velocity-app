@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,10 @@ type ticketDetail struct {
 	// base URL (omitted when no base URL is set, so the frontend renders no
 	// broken link). Instance-agnostic — never hardcoded.
 	JiraURL string `json:"jira_url,omitempty"`
+	// Scale is the configured Fibonacci ladder (cfg.Scale or its default). The
+	// UI uses it to constrain the human override to on-scale values rather than
+	// free integers, so overrides stay filterable and match what posts to Jira.
+	Scale []int `json:"scale"`
 }
 
 // jiraBrowseURL builds the standard Jira deep link ({base}/browse/{KEY}) from
@@ -135,6 +140,7 @@ func registerScoringRoutes(mux *http.ServeMux, profile config.Profile, store cac
 			Persisted:          persisted,
 			ScoreTicketCommand: "/score-ticket " + ev.Key,
 			JiraURL:            jiraBrowseURL(profile.Jira.BaseURL, ev.Key),
+			Scale:              scoring.EffectiveScale(profile.StoryPoints),
 		})
 	})
 
@@ -303,8 +309,13 @@ func registerScoringRoutes(mux *http.ServeMux, profile config.Profile, store cac
 			http.Error(w, "ticket and points are required", http.StatusBadRequest)
 			return
 		}
-		if *body.Points < 0 {
-			http.Error(w, "points must be a non-negative integer", http.StatusBadRequest)
+		// The override is a story-point value, so it must land on the configured
+		// Fibonacci ladder — the same steps the engine snaps to. This keeps human
+		// overrides filterable and on-scale with what posts to Jira; it also
+		// guards a direct API call from bypassing the UI's dropdown.
+		scale := scoring.EffectiveScale(profile.StoryPoints)
+		if !slices.Contains(scale, *body.Points) {
+			http.Error(w, fmt.Sprintf("points must be one of the configured scale steps %v", scale), http.StatusBadRequest)
 			return
 		}
 		existing, ok, err := scores.Get(body.Ticket, "")

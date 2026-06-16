@@ -46,10 +46,7 @@ func Band(ev *TicketEvidence, cfg config.StoryPointsConfig) BandResult {
 		return bandSpike(ev, cfg)
 	}
 
-	scale := cfg.Scale
-	if len(scale) == 0 {
-		scale = []int{1, 2, 3, 5, 8, 13}
-	}
+	scale := EffectiveScale(cfg)
 
 	cycleDays := cycleDays(ev)
 	highLOC := ev.NetLOC >= cfg.LOCThreshold
@@ -262,6 +259,17 @@ func cycleDays(ev *TicketEvidence) float64 {
 		return ev.Resolved.Sub(ev.Created).Hours() / 24
 	}
 	return 0
+}
+
+// EffectiveScale is the Fibonacci ladder the engine snaps to: the configured
+// Scale, or the default 1,2,3,5,8,13 when unset. Single source of truth for the
+// ladder — band/spike snapping, the override-value guard, and the scoring UI's
+// allowed steps all read it.
+func EffectiveScale(cfg config.StoryPointsConfig) []int {
+	if len(cfg.Scale) == 0 {
+		return []int{1, 2, 3, 5, 8, 13}
+	}
+	return cfg.Scale
 }
 
 // snap maps a continuous effort to the nearest scale step, returning the picked

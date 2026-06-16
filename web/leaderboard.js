@@ -14,7 +14,7 @@
   'use strict';
 
   const { escapeHTML, formatNumber, shiftMonth, monthDelta, clampMonth,
-          isoWeekToApproxMonth, setActive, devLogin } = window.VUtil;
+          isoWeekToApproxMonth, setActive, devLogin, chartLoading } = window.VUtil;
   const { clearSVG, drawEmptyText, niceTicks, drawLineSeries, legend } = window.VChart;
 
   const TOP_N = 10;
@@ -46,7 +46,10 @@
   };
 
   // ---- Boot ----
+  const CHARTS = ['aside-chart', 'team-chart'];
+
   async function boot() {
+    CHARTS.forEach(id => chartLoading(id, true));
     try {
       const res = await fetch('/metrics.json', { cache: 'no-store' });
       if (!res.ok) throw new Error(res.statusText);
@@ -64,12 +67,14 @@
       console.error(err);
       document.getElementById('loading').hidden = true;
       document.getElementById('error').hidden = false;
+      CHARTS.forEach(id => chartLoading(id, false));
       return;
     }
     document.getElementById('loading').hidden = true;
 
     wireControls();
     renderAll();
+    CHARTS.forEach(id => chartLoading(id, false));
   }
 
   function wireControls() {
@@ -438,7 +443,7 @@
       const points = annotatePartial(metricSeries(metric, cmp), metric.key);
       if (points.length) overlay = { label: cmp.label, points };
     }
-    drawLineSeries(svg, series, { compact: true, overlay });
+    drawLineSeries(svg, series, { compact: true, overlay, tooltip: 'team-tooltip' });
     legend('team-legend', metric.label, overlay ? overlay.label : null, series[series.length - 1]);
   }
 

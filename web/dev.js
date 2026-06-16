@@ -15,7 +15,7 @@
 (() => {
   'use strict';
 
-  const { escapeHTML, formatNumber, shiftMonth, monthDelta, clampMonth, setActive } = window.VUtil;
+  const { escapeHTML, formatNumber, shiftMonth, monthDelta, clampMonth, setActive, jiraBrowseURL, chartLoading } = window.VUtil;
   const { drawEmptyText, niceTicks, displayValue, paceBadge } = window.VChart;
 
   // ---- Available metrics. `key` matches the JSON field on dev.totals /
@@ -58,7 +58,10 @@
     projectsSort: 'share',      // 'share' | 'absolute' | 'surge'
   };
 
+  const CHARTS = ['trend-chart', 'elo-chart'];
+
   async function boot() {
+    CHARTS.forEach(id => chartLoading(id, true));
     try {
       const res = await fetch('/metrics.json', { cache: 'no-store' });
       if (!res.ok) throw new Error(res.statusText);
@@ -67,12 +70,14 @@
       console.error(err);
       document.getElementById('loading').hidden = true;
       document.getElementById('error').hidden = false;
+      CHARTS.forEach(id => chartLoading(id, false));
       return;
     }
     state.login = loginFromPath();
     document.getElementById('loading').hidden = true;
     wireControls();
     await loadDevWindow();
+    CHARTS.forEach(id => chartLoading(id, false));
   }
 
   // /dev/<login>  or  /dev/  → empty string (falls back to the top dev).
@@ -141,7 +146,12 @@
       state.range = btn.dataset.range;
       // The window drives the whole page — re-fetch the windowed metrics, then
       // renderAll() (via loadDevWindow) re-renders tiles, score, and both charts.
+      // Both charts refetch, so show their per-chart loaders while in flight.
+      chartLoading('trend-chart', true);
+      chartLoading('elo-chart', true);
       await loadDevWindow();
+      chartLoading('trend-chart', false);
+      chartLoading('elo-chart', false);
     });
     document.getElementById('comparison-picker').addEventListener('change', (e) => {
       state.comparison = e.target.value;
@@ -432,12 +442,22 @@
   function ratio(d, t) { return t > 0 ? d / t : 0; }
   function surgeCount(arr) { return arr.filter(p => (p.triggers || []).length > 0).length; }
 
+  // Epic key as a Jira deep link when a base URL is configured, else plain
+  // text. Epic keys aren't anonymized, so this is safe in incognito too.
+  function epicKeyHTML(key) {
+    const url = jiraBrowseURL(key);
+    const safe = escapeHTML(key);
+    return url
+      ? `<a class="epic-link" href="${escapeHTML(url)}" target="_blank" rel="noopener">${safe}</a>`
+      : safe;
+  }
+
   function shareRow(p) {
     const row = document.createElement('div');
     row.className = 'share-row';
     if ((p.triggers || []).length > 0) row.classList.add('surge');
     row.innerHTML = `
-      <div class="key" role="cell">${escapeHTML(p.epic_key)}</div>
+      <div class="key" role="cell">${epicKeyHTML(p.epic_key)}</div>
       <div class="summary grow" role="cell">${p.summary ? escapeHTML(p.summary) : '<span class="placeholder">Epic not in cache</span>'}</div>
       <div class="num" role="cell" title="${ratioTitle(p.dev_prs, p.team_prs)}">${shareCell(p.dev_prs, p.team_prs)}</div>
       <div class="num" role="cell" title="${ratioTitle(p.dev_commits, p.team_commits)}">${shareCell(p.dev_commits, p.team_commits)}</div>

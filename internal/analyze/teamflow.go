@@ -35,6 +35,12 @@ type TeamFlowMonth struct {
 	MedianCycleHours     float64 `json:"median_cycle_hours"`
 	StoryPoints          float64 `json:"story_points"`           // team SP completed (sum) — dormant until SP coverage
 	ClaudeIssuesResolved int     `json:"claude_issues_resolved"` // CLAUDE_GEN-labeled, resolved that month
+	// Per-month cycle-time split, mirroring ClaudeCut but trended: median active
+	// dev/review time over tickets resolved that month, partitioned by whether
+	// the ticket carries a CLAUDE_GEN label. 0 when no qualifying tickets that
+	// month. Powers the Velocity "Claude vs other" cycle-time-over-time view.
+	MedianCycleHoursClaude float64 `json:"median_cycle_hours_claude"`
+	MedianCycleHoursOther  float64 `json:"median_cycle_hours_other"`
 }
 
 // ClaudeCut is the "what is Claude doing for our velocity" headline for the
@@ -75,6 +81,8 @@ func deriveTeamFlow(data *Loaded, histStart, current, curStart, curEnd cache.Mon
 		idx[m.String()] = i
 	}
 	cycleByMonth := map[string][]float64{}
+	claudeCycleByMonth := map[string][]float64{}
+	otherCycleByMonth := map[string][]float64{}
 
 	for _, iss := range data.Issues {
 		if i, ok := idx[monthKey(iss.Created)]; ok {
@@ -91,11 +99,18 @@ func deriveTeamFlow(data *Loaded, histStart, current, curStart, curEnd cache.Mon
 		if iss.StoryPoints > 0 {
 			rows[i].StoryPoints += iss.StoryPoints
 		}
-		if hasClaudeLabel(iss.Labels) {
+		isClaude := hasClaudeLabel(iss.Labels)
+		if isClaude {
 			rows[i].ClaudeIssuesResolved++
 		}
 		if c := ActiveDevHours(iss); c > 0 {
-			cycleByMonth[rows[i].Month] = append(cycleByMonth[rows[i].Month], c)
+			m := rows[i].Month
+			cycleByMonth[m] = append(cycleByMonth[m], c)
+			if isClaude {
+				claudeCycleByMonth[m] = append(claudeCycleByMonth[m], c)
+			} else {
+				otherCycleByMonth[m] = append(otherCycleByMonth[m], c)
+			}
 		}
 	}
 	for _, pr := range data.PRs {
@@ -110,6 +125,12 @@ func deriveTeamFlow(data *Loaded, histStart, current, curStart, curEnd cache.Mon
 	}
 	for month, xs := range cycleByMonth {
 		rows[idx[month]].MedianCycleHours = percentile(xs, 50)
+	}
+	for month, xs := range claudeCycleByMonth {
+		rows[idx[month]].MedianCycleHoursClaude = percentile(xs, 50)
+	}
+	for month, xs := range otherCycleByMonth {
+		rows[idx[month]].MedianCycleHoursOther = percentile(xs, 50)
 	}
 
 	return TeamFlow{

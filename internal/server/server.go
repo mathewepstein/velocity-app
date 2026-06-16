@@ -132,6 +132,11 @@ type pageData struct {
 	ActiveNav  string
 	SelfDevURL string
 	Incognito  bool
+	// JiraBaseURL is the configured Jira instance base (e.g.
+	// https://x.atlassian.net), emitted as a <meta> so client pages can build
+	// {base}/browse/{KEY} deep links for epic keys. Empty when no base is
+	// configured, in which case pages render epic keys as plain text.
+	JiraBaseURL string
 }
 
 // buildHandler wires the routes. Extracted so tests can drive the mux
@@ -228,14 +233,33 @@ func buildHandler(selfLogin string, incog bool, profile config.Profile, store ca
 		return "/dev/"
 	}
 
+	jiraBase := strings.TrimRight(strings.TrimSpace(profile.Jira.BaseURL), "/")
+
 	renderPage := func(pageFile, activeNav string) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			data := pageData{ActiveNav: activeNav, SelfDevURL: selfURL(), Incognito: incog}
+			data := pageData{ActiveNav: activeNav, SelfDevURL: selfURL(), Incognito: incog, JiraBaseURL: jiraBase}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
 			if err := tmpl.ExecuteTemplate(w, pageFile, data); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 			}
+		}
+	}
+
+	// The dev page is the "Me" tab only when it's actually showing the viewer's
+	// own profile — otherwise viewing any teammate's page lit up "Me". selfURL()
+	// already resolves the incognito slug, so comparing the request path against
+	// it is correct in both modes. Any other dev → no active nav item.
+	devPage := func(w http.ResponseWriter, r *http.Request) {
+		activeNav := ""
+		if r.URL.Path == selfURL() {
+			activeNav = "me"
+		}
+		data := pageData{ActiveNav: activeNav, SelfDevURL: selfURL(), Incognito: incog, JiraBaseURL: jiraBase}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		if err := tmpl.ExecuteTemplate(w, "dev.html", data); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	}
 
@@ -246,7 +270,7 @@ func buildHandler(selfLogin string, incog bool, profile config.Profile, store ca
 	mux.HandleFunc("GET /contributors/{$}", renderPage("contributors.html", "contributors"))
 	mux.HandleFunc("GET /scoring", renderPage("scoring.html", "scoring"))
 	mux.HandleFunc("GET /scoring/{$}", renderPage("scoring.html", "scoring"))
-	mux.HandleFunc("GET /dev/", renderPage("dev.html", "me"))
+	mux.HandleFunc("GET /dev/", devPage)
 
 	mux.HandleFunc("GET /metrics.json", func(w http.ResponseWriter, r *http.Request) {
 		root, err := cache.Root()
@@ -360,8 +384,12 @@ func buildHandler(selfLogin string, incog bool, profile config.Profile, store ca
 
 	// GET /api/team/flow?from=YYYY-MM&to=YYYY-MM — the macro team-flow view
 	// (architecture Step 2). Monthly is always the full history (the frontend
-	// windows the chart client-side); from/to scope the Claude-attribution cut.
-	// No incognito scrub: TeamFlow is counts/months/cycle-hours, no identities.
+	// windows the chart client-side); from/to scope the Claude-attribution cut
+	// and the QA/cycle rollup. The embedded TeamFlow keeps `monthly`/`claude` at
+	// the top level (unchanged for existing readers); `qa` is the windowed
+	// QA-flow so the Velocity highlight tiles follow the range picker instead of
+	// the frozen current-window numbers in metrics.json.
+	// No incognito scrub: all fields are counts/months/cycle-hours, no identities.
 	mux.HandleFunc("GET /api/team/flow", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if store == nil {
@@ -373,13 +401,17 @@ func buildHandler(selfLogin string, incog bool, profile config.Profile, store ca
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		flow, err := analyze.TeamFlowForWindow(analyze.Options{Profile: profile, Store: store}, from, to)
+		flow, qa, err := analyze.TeamFlowWithQAForWindow(analyze.Options{Profile: profile, Store: store}, from, to)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		resp := struct {
+			analyze.TeamFlow
+			QA analyze.QAFlow `json:"qa"`
+		}{TeamFlow: flow, QA: qa}
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(flow); err != nil {
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})

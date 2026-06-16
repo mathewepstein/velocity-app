@@ -140,6 +140,43 @@ func TestHandler_MeLinkUsesSelfLogin(t *testing.T) {
 	}
 }
 
+// The "Me" nav item should light up only when the dev page is showing the
+// viewer's own profile — viewing a teammate's page must not mark "Me" active.
+func TestHandler_DevPageMeActiveOnlyForSelf(t *testing.T) {
+	h, err := buildHandler("alice", false, config.Profile{}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("buildHandler: %v", err)
+	}
+
+	self := httptest.NewRecorder()
+	h.ServeHTTP(self, loopbackRequest(http.MethodGet, "/dev/alice", nil))
+	if !strings.Contains(self.Body.String(), `aria-current="page"`) {
+		t.Errorf("/dev/alice (self) should mark a nav item active")
+	}
+
+	other := httptest.NewRecorder()
+	h.ServeHTTP(other, loopbackRequest(http.MethodGet, "/dev/bob", nil))
+	if strings.Contains(other.Body.String(), `aria-current="page"`) {
+		t.Errorf("/dev/bob (not self) should not mark any nav item active")
+	}
+}
+
+// JiraBaseURL flows from the profile into the page as a <meta> tag so client
+// pages can build /browse/{KEY} links; absent meta content when unset.
+func TestHandler_JiraBaseMetaInjected(t *testing.T) {
+	profile := config.Profile{}
+	profile.Jira.BaseURL = "https://x.atlassian.net/"
+	h, err := buildHandler("", false, profile, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("buildHandler: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, loopbackRequest(http.MethodGet, "/velocity", nil))
+	if !strings.Contains(rec.Body.String(), `name="jira-base" content="https://x.atlassian.net"`) {
+		t.Errorf("/velocity missing trimmed jira-base meta tag")
+	}
+}
+
 func TestHandler_ServesEmbeddedJS(t *testing.T) {
 	h, err := buildHandler("", false, config.Profile{}, nil, nil, nil)
 	if err != nil {

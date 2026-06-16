@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Velocity — Macro flow</title>
+  <meta name="jira-base" content="{{.JiraBaseURL}}" />
   <link rel="stylesheet" href="/dashboard.css" />
 </head>
 <body class="{{if .Incognito}}incognito{{end}}">
@@ -46,6 +47,7 @@
       <div class="chart-wrap">
         <svg id="flow-chart" viewBox="0 0 1200 280" preserveAspectRatio="none"></svg>
         <div class="tooltip" id="flow-tooltip"></div>
+        <div class="chart-loading" hidden><span class="chart-spinner"></span></div>
       </div>
       <div class="chart-legend" id="flow-legend"></div>
     </section>
@@ -58,6 +60,7 @@
       <div class="chart-wrap">
         <svg id="claude-chart" viewBox="0 0 1200 280" preserveAspectRatio="none"></svg>
         <div class="tooltip" id="claude-tooltip"></div>
+        <div class="chart-loading" hidden><span class="chart-spinner"></span></div>
       </div>
       <div class="chart-legend" id="claude-legend"></div>
     </section>
@@ -65,8 +68,9 @@
     <!-- Initiatives / momentum (relocated from home) -->
     <section class="panel">
       <h2 style="margin:0;">Initiatives — by momentum <span class="meta" id="surge-meta"></span></h2>
-      <p class="panel-hint">Epics ranked by recent activity vs their own trailing baseline — what's heating up or cooling off right now (independent of the flow range above).</p>
+      <p class="panel-hint">Epics ranked by recent activity vs their own trailing baseline — what's heating up or cooling off right now (independent of the flow range above). The <strong>momentum multiplier</strong> (e.g. <code>3.0×</code>) is the recent 2-week activity rate divided by the trailing 8-week baseline: <code>2.0×</code> means twice as active as its own recent norm, <code>1.0×</code> is steady, below <code>1.0×</code> is cooling. Brand-new epics have no baseline yet and show <code>new</code>.</p>
       <div class="projects-header" style="margin-top:8px;">
+        <span class="meta" style="flex:1;">All active epics shown by default; toggle to narrow to rising &amp; hot.</span>
         <button class="projects-toggle" id="surge-rising-only" aria-pressed="false">Rising &amp; hot only</button>
       </div>
       <div class="projects" id="surge-projects"></div>

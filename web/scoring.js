@@ -520,8 +520,8 @@
     // Copy-ready /score-ticket command for the human/LLM insight pass.
     body.appendChild(copyBlock(detail.score_ticket_command));
 
-    // Override input — Phase 4 lays out the control; the post path is Phase 5.
-    body.appendChild(overrideBlock(ev.key, band, persisted));
+    // Override control — constrained to the configured scale steps.
+    body.appendChild(overrideBlock(ev.key, band, persisted, detail.scale));
   }
 
   function evidenceFacts(ev) {
@@ -580,7 +580,12 @@
     return wrap;
   }
 
-  function overrideBlock(key, band, persisted) {
+  // Allowed override values: the server-provided configured scale, falling back
+  // to the standard Fibonacci ladder for older payloads that predate the field.
+  const DEFAULT_SCALE = [1, 2, 3, 5, 8, 13];
+
+  function overrideBlock(key, band, persisted, scale) {
+    const steps = (Array.isArray(scale) && scale.length) ? scale : DEFAULT_SCALE;
     const wrap = document.createElement('div');
     wrap.className = 'detail-override';
     const label = document.createElement('div');
@@ -588,15 +593,20 @@
     label.textContent = 'Override & post';
     const row = document.createElement('div');
     row.className = 'override-row';
-    const input = document.createElement('input');
-    input.type = 'number';
-    input.min = '0';
-    input.step = '1';
+    // A dropdown of the configured scale steps — overrides must land on-scale
+    // (matches the engine's snap and what posts to Jira), so no free integers.
+    const input = document.createElement('select');
     input.className = 'override-input';
-    input.placeholder = 'points';
-    input.value = persisted && persisted.source === 'human'
-      ? String(persisted.points)
-      : String(band.points);
+    const current = persisted && persisted.source === 'human'
+      ? persisted.points
+      : band.points;
+    for (const step of steps) {
+      const opt = document.createElement('option');
+      opt.value = String(step);
+      opt.textContent = String(step);
+      if (step === current) opt.selected = true;
+      input.appendChild(opt);
+    }
     const postBtn = document.createElement('button');
     postBtn.type = 'button';
     postBtn.className = 'run-btn';

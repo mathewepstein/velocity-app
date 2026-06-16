@@ -176,6 +176,46 @@
       lbl.textContent = series[i].label;
       svg.appendChild(lbl);
     }
+
+    // Hover tooltip — opts.tooltip is the element (or its id) to populate. The
+    // overlay's label/value are shown alongside the main series when present.
+    const tip = resolveEl(opts.tooltip);
+    if (tip) wireHover(svg, tip, series, overlay ? overlay.label : null, overlay, x, y, vb, pad);
+  }
+
+  function resolveEl(t) {
+    if (!t) return null;
+    return typeof t === 'string' ? document.getElementById(t) : t;
+  }
+
+  // Shared pointer-driven tooltip for the 0-baseline series charts. Snaps to the
+  // nearest x index; shows the partial month's "so far / projected" split and
+  // the overlay value when one is charted.
+  function wireHover(svg, tooltip, series, overlayLabel, overlay, x, y, vb, pad) {
+    const xStep = series.length > 1 ? (vb.w - pad.l - pad.r) / (series.length - 1) : 0;
+    svg.onpointermove = (evt) => {
+      const rect = svg.getBoundingClientRect();
+      const sx = (evt.clientX - rect.left) * vb.w / rect.width;
+      const i = Math.max(0, Math.min(series.length - 1, Math.round((sx - pad.l) / (xStep || 1))));
+      const cur = series[i];
+      const valTxt = (cur.partial && cur.projected != null)
+        ? `${formatNumber(cur.value)} so far · ~${formatNumber(Math.round(cur.projected))} proj`
+        : formatNumber(cur.value);
+      const lines = [
+        `<div class="t-label">${escapeHTML(cur.label)}${cur.partial ? ' (partial)' : ''}</div>`,
+        `<div class="t-value">${valTxt}</div>`,
+      ];
+      if (overlay && overlay.points[i]) {
+        lines.push(`<div class="t-value" style="color:var(--overlay)">${escapeHTML(overlayLabel || 'overlay')}: ${formatNumber(overlay.points[i].value)}</div>`);
+      }
+      tooltip.innerHTML = lines.join('');
+      tooltip.classList.add('visible');
+      const left = x(i) * rect.width / vb.w;
+      const top = (y(displayValue(cur)) * rect.height / vb.h) - 40;
+      tooltip.style.left = Math.max(0, Math.min(rect.width - 160, left - 50)) + 'px';
+      tooltip.style.top = Math.max(0, top) + 'px';
+    };
+    svg.onpointerleave = () => { tooltip.classList.remove('visible'); };
   }
 
   window.VChart = {

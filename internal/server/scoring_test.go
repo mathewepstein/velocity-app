@@ -209,6 +209,20 @@ func TestScoringOverride_400WithoutPoints(t *testing.T) {
 	}
 }
 
+// An override must land on the configured scale — an in-between value like 4
+// (not a Fibonacci step) is rejected so overrides stay on-scale with the engine.
+func TestScoringOverride_400ForOffScalePoints(t *testing.T) {
+	h := handlerWith(t, seededScoreStore(t))
+	for _, pts := range []string{"4", "0", "20"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, loopbackRequest(http.MethodPost, "/api/scoring/override",
+			strings.NewReader(`{"ticket":"CD-1","points":`+pts+`}`)))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("points=%s: status = %d, want 400 (off-scale)", pts, rec.Code)
+		}
+	}
+}
+
 func TestScoringJiraStatus_NotConfigured(t *testing.T) {
 	h := handlerWith(t, seededScoreStore(t)) // no poster
 	rec := httptest.NewRecorder()

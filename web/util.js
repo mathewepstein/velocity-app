@@ -48,6 +48,33 @@
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
   }
 
+  // Jira base URL for {base}/browse/{KEY} deep links, read from the server-
+  // rendered <meta name="jira-base"> (empty when no Jira base is configured).
+  function jiraBase() {
+    const el = document.querySelector('meta[name="jira-base"]');
+    return (el && el.content || '').replace(/\/+$/, '');
+  }
+
+  // Build a Jira browse URL, or '' when no base is configured / no key — so
+  // callers render plain text rather than a broken link. Mirrors the server's
+  // jiraBrowseURL.
+  function jiraBrowseURL(key) {
+    const base = jiraBase();
+    if (!base || !key) return '';
+    return `${base}/browse/${encodeURIComponent(key)}`;
+  }
+
+  // Show/hide the per-chart loading overlay for the chart whose <svg> has the
+  // given id. The overlay is a `.chart-loading` element inside the same
+  // `.chart-wrap`; no-op when the markup isn't present. Used while an async
+  // fetch backing that chart is in flight.
+  function chartLoading(svgId, on) {
+    const svg = document.getElementById(svgId);
+    const wrap = svg && svg.closest('.chart-wrap');
+    const el = wrap && wrap.querySelector('.chart-loading');
+    if (el) el.hidden = !on;
+  }
+
   // Toggle the .active class within a button group to the clicked button.
   function setActive(groupId, btn) {
     document.querySelectorAll(`#${groupId} button`).forEach(b => b.classList.remove('active'));
@@ -67,6 +94,6 @@
   window.VUtil = {
     formatNumber, fmtDays, escapeHTML,
     shiftMonth, monthDelta, clampMonth, isoWeekToApproxMonth,
-    setActive, devLogin,
+    setActive, devLogin, jiraBase, jiraBrowseURL, chartLoading,
   };
 })();

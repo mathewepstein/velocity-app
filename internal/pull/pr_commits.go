@@ -3,6 +3,7 @@ package pull
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -67,6 +68,63 @@ func (p *GithubPuller) FetchPRCommits(ctx context.Context, repo string, number i
 			}
 		}
 	}
+}
+
+// HydratePRMeta backfills the PR-detail-body fields (base/head ref+sha+repo,
+// merged_by, commit/file counts, merge_commit_sha, draft, auto_merge, updated,
+// author_association, labels, assignees, requested_reviewers) and the PR→commit
+// membership onto an already-cached merged PR — the lean alternative to a full
+// re-crawl. Exactly two API calls: /pulls/{n}/commits and /pulls/{n}; it does
+// NOT re-fetch the files/comments/commit-search payloads the original crawl
+// already stored.
+//
+// Atomicity contract (the backfill runner checkpoints the whole slice on a
+// transient error, so a partial mutation would be skipped forever on resume):
+// pr is mutated ONLY on full success, or — for a permanently-unreachable PR —
+// the Commits sentinel alone is set and ErrPRUnreachable returned (PermSkip). A
+// transient error leaves pr untouched so the next run retries it. Commits is
+// fetched first as the reachability gate (it cleanly maps 404/410/422 to
+// ErrPRUnreachable, unlike the detail call).
+func (p *GithubPuller) HydratePRMeta(ctx context.Context, pr *cache.GitHubPR) error {
+	commits, err := p.FetchPRCommits(ctx, pr.Repo, pr.Number)
+	if err != nil {
+		if errors.Is(err, ErrPRUnreachable) {
+			pr.Commits = []cache.PRCommit{} // permanent: mark so it's never retried
+		}
+		return err // transient: pr left untouched for a clean resume
+	}
+	detail, err := p.fetchPRDetail(ctx, pr.Repo, pr.Number)
+	if err != nil {
+		return err // transient (commits just succeeded → PR reachable); pr untouched
+	}
+
+	// Both calls succeeded — apply atomically.
+	if commits == nil {
+		commits = []cache.PRCommit{}
+	}
+	pr.Commits = commits
+	pr.BaseBranch = detail.Base.Ref
+	pr.BaseSHA = detail.Base.SHA
+	pr.HeadSHA = detail.Head.SHA
+	pr.HeadRepo = detail.Head.repoName()
+	pr.BaseRepo = detail.Base.repoName()
+	pr.CommitCount = detail.Commits
+	pr.ChangedFiles = detail.ChangedFiles
+	pr.MergeCommitSHA = detail.MergeCommit
+	pr.Draft = detail.Draft
+	pr.AutoMerge = detail.AutoMerge != nil
+	pr.AuthorAssociation = detail.AuthorAssoc
+	pr.Labels = ghLabelNames(detail.Labels)
+	pr.Assignees = ghUserLogins(detail.Assignees)
+	pr.RequestedReviewers = ghUserLogins(detail.RequestedReviewers)
+	if detail.MergedBy != nil {
+		pr.MergedBy = detail.MergedBy.Login
+	}
+	if detail.UpdatedAt != nil {
+		t := detail.UpdatedAt.UTC()
+		pr.Updated = &t
+	}
+	return nil
 }
 
 // ghPRCommit is the subset of the /pulls/{n}/commits response we keep: the SHA,

@@ -44,10 +44,13 @@ func monthInRange(m string, start, end cache.Month) bool {
 // Jira issues count per cache month (updated month); created/resolved use
 // their own timestamps. PR merged + LoC are attributed to merged_at, not
 // created_at, since the UI "PRs merged" chart should spike when work ships.
-func rollupMonthly(data *Loaded, start, end cache.Month, ci config.CodeImpactConfig) []MonthlyRow {
+func rollupMonthly(data *Loaded, start, end cache.Month, ci config.CodeImpactConfig, norm config.NormalizeConfig) []MonthlyRow {
 	months := cache.MonthsInRange(start, end)
 	byMonth := make(map[string]*MonthlyRow, len(months))
 	filesByMonth := make(map[string]map[string]struct{}, len(months))
+	// Generated-file LOC per month, netted out of the code_impact LOC term
+	// below. LOCAdded/LOCDeleted on the row stay raw (display metrics).
+	genLOCByMonth := make(map[string]float64, len(months))
 	for _, m := range months {
 		key := m.String()
 		byMonth[key] = &MonthlyRow{Month: key}
@@ -91,6 +94,9 @@ func rollupMonthly(data *Loaded, start, end cache.Month, ci config.CodeImpactCon
 				r.LOCAdded += p.Additions
 				r.LOCDeleted += p.Deletions
 			})
+			if _, ok := byMonth[mk]; ok {
+				genLOCByMonth[mk] += excludedWeightedLOC(p, ci, norm)
+			}
 			if files, ok := filesByMonth[mk]; ok {
 				for _, f := range p.Files {
 					files[f] = struct{}{}
@@ -112,7 +118,13 @@ func rollupMonthly(data *Loaded, start, end cache.Month, ci config.CodeImpactCon
 		key := m.String()
 		row := byMonth[key]
 		row.UniqueFilesTouched = len(filesByMonth[key])
-		row.CodeImpact = computeCodeImpactFloat(float64(row.UniqueFilesTouched), weightedLOC(row.LOCAdded, row.LOCDeleted, ci), row.PRsMerged, ci)
+		// Net generated-file LOC out of the code_impact LOC term (display
+		// LOCAdded/LOCDeleted stay raw). Clamp ≥0 against per-file truncation.
+		loc := weightedLOC(row.LOCAdded, row.LOCDeleted, ci) - genLOCByMonth[key]
+		if loc < 0 {
+			loc = 0
+		}
+		row.CodeImpact = computeCodeImpactFloat(float64(row.UniqueFilesTouched), loc, row.PRsMerged, ci)
 		out = append(out, *row)
 	}
 	return out
@@ -121,10 +133,11 @@ func rollupMonthly(data *Loaded, start, end cache.Month, ci config.CodeImpactCon
 // rollupWeekly produces a continuous weekly series for [start, end]. We walk
 // the range day by day building the ordered list of ISO week labels so weeks
 // that straddle month boundaries appear exactly once.
-func rollupWeekly(data *Loaded, start, end cache.Month, ci config.CodeImpactConfig) []WeeklyRow {
+func rollupWeekly(data *Loaded, start, end cache.Month, ci config.CodeImpactConfig, norm config.NormalizeConfig) []WeeklyRow {
 	weeks := isoWeeksInRange(start, end)
 	byWeek := make(map[string]*WeeklyRow, len(weeks))
 	filesByWeek := make(map[string]map[string]struct{}, len(weeks))
+	genLOCByWeek := make(map[string]float64, len(weeks))
 	for _, w := range weeks {
 		byWeek[w] = &WeeklyRow{Week: w}
 		filesByWeek[w] = map[string]struct{}{}
@@ -169,6 +182,9 @@ func rollupWeekly(data *Loaded, start, end cache.Month, ci config.CodeImpactConf
 				r.LOCAdded += p.Additions
 				r.LOCDeleted += p.Deletions
 			})
+			if _, ok := byWeek[wk]; ok {
+				genLOCByWeek[wk] += excludedWeightedLOC(p, ci, norm)
+			}
 			if files, ok := filesByWeek[wk]; ok {
 				for _, f := range p.Files {
 					files[f] = struct{}{}
@@ -191,7 +207,11 @@ func rollupWeekly(data *Loaded, start, end cache.Month, ci config.CodeImpactConf
 	for _, w := range weeks {
 		row := byWeek[w]
 		row.UniqueFilesTouched = len(filesByWeek[w])
-		row.CodeImpact = computeCodeImpactFloat(float64(row.UniqueFilesTouched), weightedLOC(row.LOCAdded, row.LOCDeleted, ci), row.PRsMerged, ci)
+		loc := weightedLOC(row.LOCAdded, row.LOCDeleted, ci) - genLOCByWeek[w]
+		if loc < 0 {
+			loc = 0
+		}
+		row.CodeImpact = computeCodeImpactFloat(float64(row.UniqueFilesTouched), loc, row.PRsMerged, ci)
 		out = append(out, *row)
 	}
 	return out

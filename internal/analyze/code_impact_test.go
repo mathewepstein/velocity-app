@@ -109,7 +109,7 @@ func TestRollupMonthlyPopulatesUniqueFilesAndCodeImpact(t *testing.T) {
 	}
 	start := cache.MustParseMonth("2026-01")
 	end := cache.MustParseMonth("2026-04")
-	rows := rollupMonthly(data, start, end, ci)
+	rows := rollupMonthly(data, start, end, ci, testNorm())
 
 	if rows[0].UniqueFilesTouched != 3 {
 		t.Errorf("Jan unique files = %d, want 3", rows[0].UniqueFilesTouched)

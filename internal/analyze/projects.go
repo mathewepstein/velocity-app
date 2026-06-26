@@ -176,7 +176,7 @@ func weekOrdinal(label string) (int, bool) {
 // Reviews use the (repo, pr_number) → epics index built from the PRs list;
 // a review on a PR not in the cache (rare — happens at the edge of the
 // pull window) is silently skipped.
-func buildProjectShares(data *Loaded, projects []Project, ci config.CodeImpactConfig) map[string]map[string]*ProjectShare {
+func buildProjectShares(data *Loaded, projects []Project, ci config.CodeImpactConfig, norm config.NormalizeConfig) map[string]map[string]*ProjectShare {
 	issueByKey := make(map[string]cache.JiraIssue, len(data.Issues))
 	for _, i := range data.Issues {
 		issueByKey[i.Key] = i
@@ -259,11 +259,17 @@ func buildProjectShares(data *Loaded, projects []Project, ci config.CodeImpactCo
 			if _, ok := relevant[epic]; !ok {
 				continue
 			}
+			// Generated output + dumped data files are fully excluded from LOC.
+			exA, exD := excludedLOCParts(pr, ci, norm)
+			nonGenLOC := pr.Additions + pr.Deletions - (exA + exD)
+			if nonGenLOC < 0 {
+				nonGenLOC = 0
+			}
 			tc := ensureTeam(epic)
 			tc.prs++
 			if pr.Merged != nil {
 				tc.merged++
-				tc.loc += pr.Additions + pr.Deletions
+				tc.loc += nonGenLOC
 				addFiles(tc, pr.Files)
 			}
 			if pr.Author != "" {
@@ -271,7 +277,7 @@ func buildProjectShares(data *Loaded, projects []Project, ci config.CodeImpactCo
 				dc.prs++
 				if pr.Merged != nil {
 					dc.merged++
-					dc.loc += pr.Additions + pr.Deletions
+					dc.loc += nonGenLOC
 					addFiles(dc, pr.Files)
 				}
 			}

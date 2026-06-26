@@ -80,13 +80,13 @@ func Run(opts Options) (*Result, error) {
 	}
 	ci := opts.Profile.Scoring.CodeImpact
 	norm := opts.Profile.Scoring.Normalize
-	curWin := currentWindow(selfData, current, length, ci)
+	curWin := currentWindow(selfData, current, length, ci, norm)
 	curWin.Label = fmt.Sprintf("Current (%s → %s)", curWin.Window.Start, curWin.Window.End)
 
-	priorWin := priorWindow(selfData, curWin, ci)
+	priorWin := priorWindow(selfData, curWin, ci, norm)
 	priorWin.Label = fmt.Sprintf("Prior (%s → %s)", priorWin.Window.Start, priorWin.Window.End)
 
-	yoyWin := yoyWindow(selfData, curWin, ci)
+	yoyWin := yoyWindow(selfData, curWin, ci, norm)
 	yoyWin.Label = fmt.Sprintf("YoY (%s → %s)", yoyWin.Window.Start, yoyWin.Window.End)
 
 	// Project detection stays on the full dataset — surges should pick up
@@ -102,7 +102,7 @@ func Run(opts Options) (*Result, error) {
 	integWeight := newIntegrationWeighter(data, opts.Profile.Scoring.Integration)
 	devs := buildDevWindows(data, opts.Profile.Devs, opts.Profile.Scoring.EffectiveExcludes(), opts.Profile.Scoring.ExcludedRoles, curStart, curEnd, backfillStart, current, ci, norm, integWeight)
 	applyCodeImpactCap(devs, ci)
-	devs = attachProjectShares(devs, buildProjectShares(data, projects, ci))
+	devs = attachProjectShares(devs, buildProjectShares(data, projects, ci, norm))
 	devs = computeContributorScores(devs, opts.Profile.Scoring.Weights, norm)
 
 	// Advance Elo ratings through every completed bi-weekly period since the
@@ -155,8 +155,8 @@ func Run(opts Options) (*Result, error) {
 		Current:       curWin,
 		Prior:         priorWin,
 		YoY:           yoyWin,
-		Quarters:      lastQuarters(selfData, current, quartersToShow, ci),
-		FullHistory:   fullHistory(selfData, backfillStart, current, ci),
+		Quarters:      lastQuarters(selfData, current, quartersToShow, ci, norm),
+		FullHistory:   fullHistory(selfData, backfillStart, current, ci, norm),
 		Projects:      projects,
 		Devs:          devs,
 		QAFlow:        deriveQAFlow(data, curStart, curEnd),

@@ -59,7 +59,7 @@ func ContributorsForWindow(opts Options, from, to cache.Month) ([]DevWindowMetri
 	integWeight := newIntegrationWeighter(data, opts.Profile.Scoring.Integration)
 	devs := buildDevWindows(data, opts.Profile.Devs, opts.Profile.Scoring.EffectiveExcludes(), opts.Profile.Scoring.ExcludedRoles, from, to, backfillStart, current, ci, norm, integWeight)
 	applyCodeImpactCap(devs, ci)
-	devs = attachProjectShares(devs, buildProjectShares(data, projects, ci))
+	devs = attachProjectShares(devs, buildProjectShares(data, projects, ci, norm))
 	devs = computeContributorScores(devs, opts.Profile.Scoring.Weights, norm)
 
 	// Elo is read-only here (precompute boundary). A missing ratings.json just

@@ -484,10 +484,46 @@ type CodeImpactConfig struct {
 	//   - DumpWeight:    weight for data files in a dump (default 0 = no credit).
 	//   - DumpDominance: min single-data-extension fraction (default 0.9).
 	//   - DumpMinFiles:  min files for a PR to qualify as a dump (default 50).
+	//   - DataFileLOCCeiling: a SINGLE serialized-data file (json/csv/xml/… — see
+	//     isOversizedDataExt) larger than this many lines is a dumped
+	//     report/fixture nobody authored line-by-line, so its LOC is fully
+	//     excluded from code_impact regardless of the multi-file DumpMinFiles
+	//     threshold. Excludes ONLY on data-extension AND over-threshold together,
+	//     so a large hand-authored code file is never caught by size alone and a
+	//     small data/config file is never caught by format alone. The size-based
+	//     half of "be careful which serialized data is real work": small config
+	//     (incl. XML) passes through; a 5k–30k-line dumped report does not.
+	//     Default 2000; gated by DisableDumpDampening. Set very high to disable.
 	DisableDumpDampening bool    `toml:"disable_dump_dampening"`
 	DumpWeight           float64 `toml:"dump_weight"`
 	DumpDominance        float64 `toml:"dump_dominance"`
 	DumpMinFiles         int     `toml:"dump_min_files"`
+	DataFileLOCCeiling   int     `toml:"data_file_loc_ceiling"`
+
+	// BoilerplateDampening (ON by default) damps near-duplicate "copy-paste"
+	// files: the same file forked many times with only a short token changed in
+	// its name. This is a purely structural heuristic — no repo names, product
+	// codes, or other org-specific knowledge — so it behaves identically in any
+	// codebase. Files are grouped into families by directory + a basename stem
+	// with short alnum tokens (≤ FamilyMaskMaxLen chars — the variable codes that
+	// distinguish copies) masked out; a family of ≥ FamilyMinSize members whose
+	// sizes cluster tightly (coefficient of variation ≤ FamilyMaxSizeCV) is
+	// treated as one unit of real work: the largest member keeps full weight,
+	// every redundant copy contributes FamilyWeight to BOTH the LOC and file-count
+	// terms. The size-dispersion gate spares genuinely-different same-named files
+	// (e.g. main.tf/variables.tf/outputs.tf, whose sizes diverge). Requires
+	// FileChange data (backfill the `file-changes` phase). Set
+	// DisableBoilerplateDampening to turn it off (mirrors DisableDumpDampening —
+	// the zero value, false, means ON).
+	//   - FamilyMinSize:    min members for a copy-family (default 3).
+	//   - FamilyMaxSizeCV:  max size coefficient-of-variation to qualify (default 0.25).
+	//   - FamilyWeight:     LOC/file weight for each redundant copy (default 0.15).
+	//   - FamilyMaskMaxLen: max length of an alnum basename token to mask (default 4).
+	DisableBoilerplateDampening bool    `toml:"disable_boilerplate_dampening"`
+	FamilyMinSize               int     `toml:"family_min_size"`
+	FamilyMaxSizeCV             float64 `toml:"family_max_size_cv"`
+	FamilyWeight                float64 `toml:"family_weight"`
+	FamilyMaskMaxLen            int     `toml:"family_mask_max_len"`
 
 	// LOCCapPercentile is the team-wide LOC percentile that caps the loc term in
 	// applyCodeImpactCap. Raised from the old hardcoded 95 to 99 so a legitimate
@@ -746,6 +782,17 @@ func DefaultScoringConfig() ScoringConfig {
 			// false), data files in a detected dump credited at DumpWeight=0.
 			DumpDominance:    0.9,
 			DumpMinFiles:     50,
+			// A single serialized-data file over 2000 lines is a dumped
+			// report/fixture, not authored LOC — fully excluded.
+			DataFileLOCCeiling: 2000,
+			// Boilerplate-family dampening: ON by default (DisableBoilerplate-
+			// Dampening false). Redundant copies in a tight size-clustered
+			// filename family credited at FamilyWeight; the largest member keeps
+			// full weight. FamilyWeight=0 refills to 0.15 (use disable to turn off).
+			FamilyMinSize:    3,
+			FamilyMaxSizeCV:  0.25,
+			FamilyWeight:     0.15,
+			FamilyMaskMaxLen: 4,
 			LOCCapPercentile: 99,
 		},
 		Normalize: NormalizeConfig{
@@ -770,7 +817,10 @@ func DefaultScoringConfig() ScoringConfig {
 				"*/generated/*",
 				"*/.next/*",
 				"*/dist/*",
-				"*/build/*",
+				// `build/` is intentionally omitted: unlike dist//.next it's
+				// commonly a hand-authored source/script directory, so matching it
+				// risks dampening real work. Add it in a profile if your repos use
+				// it strictly for build output.
 				"*/vendor/*",
 				"*/node_modules/*",
 				// Sourcemaps (compiled-style/JS output; authored .css/.scss are kept).
@@ -1193,6 +1243,27 @@ func (c *Config) applyDefaults() {
 	}
 	if p.Scoring.CodeImpact.DumpMinFiles == 0 {
 		p.Scoring.CodeImpact.DumpMinFiles = defaults.Scoring.CodeImpact.DumpMinFiles
+	}
+	// Zero fills to the default (feature ON); set a very high ceiling to disable
+	// just the single-file size check while leaving multi-file dump detection on.
+	if p.Scoring.CodeImpact.DataFileLOCCeiling == 0 {
+		p.Scoring.CodeImpact.DataFileLOCCeiling = defaults.Scoring.CodeImpact.DataFileLOCCeiling
+	}
+	// Boilerplate-family knobs. DisableBoilerplateDampening's zero value
+	// (false = dampening ON) is intended and has no fill. FamilyWeight refills
+	// from 0 to its default (exact 0 indistinguishable from unset — disable the
+	// feature rather than set weight 0); the rest fill in when omitted.
+	if p.Scoring.CodeImpact.FamilyMinSize == 0 {
+		p.Scoring.CodeImpact.FamilyMinSize = defaults.Scoring.CodeImpact.FamilyMinSize
+	}
+	if p.Scoring.CodeImpact.FamilyMaxSizeCV == 0 {
+		p.Scoring.CodeImpact.FamilyMaxSizeCV = defaults.Scoring.CodeImpact.FamilyMaxSizeCV
+	}
+	if p.Scoring.CodeImpact.FamilyWeight == 0 {
+		p.Scoring.CodeImpact.FamilyWeight = defaults.Scoring.CodeImpact.FamilyWeight
+	}
+	if p.Scoring.CodeImpact.FamilyMaskMaxLen == 0 {
+		p.Scoring.CodeImpact.FamilyMaskMaxLen = defaults.Scoring.CodeImpact.FamilyMaskMaxLen
 	}
 	if p.Scoring.CodeImpact.LOCCapPercentile == 0 {
 		p.Scoring.CodeImpact.LOCCapPercentile = defaults.Scoring.CodeImpact.LOCCapPercentile

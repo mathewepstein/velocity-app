@@ -24,8 +24,8 @@ func testNorm() config.NormalizeConfig {
 func TestPriorWindow_SameLengthJustBefore(t *testing.T) {
 	data := &Loaded{}
 	current := cache.MustParseMonth("2026-04")
-	curWin := currentWindow(data, current, 4, testCI()) // 2026-01..2026-04
-	prior := priorWindow(data, curWin, testCI())
+	curWin := currentWindow(data, current, 4, testCI(), testNorm()) // 2026-01..2026-04
+	prior := priorWindow(data, curWin, testCI(), testNorm())
 	if prior.Window.Start != "2025-09" || prior.Window.End != "2025-12" {
 		t.Errorf("want 2025-09..2025-12, got %s..%s", prior.Window.Start, prior.Window.End)
 	}
@@ -37,8 +37,8 @@ func TestPriorWindow_SameLengthJustBefore(t *testing.T) {
 func TestYoYWindow_TwelveMonthsBack(t *testing.T) {
 	data := &Loaded{}
 	current := cache.MustParseMonth("2026-04")
-	curWin := currentWindow(data, current, 4, testCI())
-	yoy := yoyWindow(data, curWin, testCI())
+	curWin := currentWindow(data, current, 4, testCI(), testNorm())
+	yoy := yoyWindow(data, curWin, testCI(), testNorm())
 	// 2026-01..2026-04 minus 12 months = 2025-01..2025-04
 	if yoy.Window.Start != "2025-01" || yoy.Window.End != "2025-04" {
 		t.Errorf("got %s..%s", yoy.Window.Start, yoy.Window.End)
@@ -92,7 +92,7 @@ func TestQuarterMonthRange(t *testing.T) {
 func TestLastQuarters_ChronologicalOldestFirst(t *testing.T) {
 	data := &Loaded{}
 	current := cache.MustParseMonth("2026-04") // Q2 2026
-	quarters := lastQuarters(data, current, 4, testCI())
+	quarters := lastQuarters(data, current, 4, testCI(), testNorm())
 	if len(quarters) != 4 {
 		t.Fatalf("want 4 quarters, got %d", len(quarters))
 	}
@@ -108,7 +108,7 @@ func TestFullHistory_CoversBackfillToCurrent(t *testing.T) {
 	data := &Loaded{}
 	start := cache.MustParseMonth("2019-11")
 	end := cache.MustParseMonth("2026-04")
-	hist := fullHistory(data, start, end, testCI())
+	hist := fullHistory(data, start, end, testCI(), testNorm())
 	wantMonths := len(cache.MonthsInRange(start, end)) // 78
 	if len(hist.Monthly) != wantMonths {
 		t.Errorf("full history months: got %d, want %d", len(hist.Monthly), wantMonths)

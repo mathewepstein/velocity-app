@@ -47,7 +47,7 @@ func TestRollupMonthly_AttributionAndZeroFill(t *testing.T) {
 
 	start := cache.MustParseMonth("2026-01")
 	end := cache.MustParseMonth("2026-04")
-	rows := rollupMonthly(data, start, end, testCI())
+	rows := rollupMonthly(data, start, end, testCI(), testNorm())
 
 	if got, want := len(rows), 4; got != want {
 		t.Fatalf("want %d months, got %d", want, got)
@@ -109,7 +109,7 @@ func TestRollupWeekly_ActiveWeeksCount(t *testing.T) {
 	}
 	start := cache.MustParseMonth("2026-01")
 	end := cache.MustParseMonth("2026-01")
-	weeks := rollupWeekly(data, start, end, testCI())
+	weeks := rollupWeekly(data, start, end, testCI(), testNorm())
 	active := activeWeeksCount(weeks)
 	if active != 2 {
 		t.Errorf("expected 2 active ISO weeks (W02, W03), got %d", active)

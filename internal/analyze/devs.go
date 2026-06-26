@@ -266,6 +266,13 @@ func buildDevWindows(data *Loaded, devIDs []config.DevIdentity, excludes, exclud
 	if ci.ChurnWeighting {
 		churn = buildChurnIndex(data)
 	}
+	// Corpus-wide copy-paste family index for boilerplate dampening (ON by
+	// default). Built once from the full corpus; nil when disabled or when
+	// nothing qualifies, so the per-file walk is skipped.
+	var family map[string]float64
+	if !ci.DisableBoilerplateDampening {
+		family = buildFamilyIndex(data, ci)
+	}
 	for _, id := range devIDs {
 		// Skip bot/login excludes AND non-scored roles (qa/exec/excluded). The
 		// dev stays in devIDs so filterUnmapped still treats their records as
@@ -273,7 +280,7 @@ func buildDevWindows(data *Loaded, devIDs []config.DevIdentity, excludes, exclud
 		if devExcluded(id, excludes) || config.RoleExcluded(id.EffectiveRole(), excludedRoles) {
 			continue
 		}
-		w := buildOneDev(data, id, start, end, fullStart, fullEnd, churn, ci, norm, iw)
+		w := buildOneDev(data, id, start, end, fullStart, fullEnd, churn, family, ci, norm, iw)
 		w.PrimaryLogin = devs.PrimaryLogin(id, activity)
 		out = append(out, w)
 	}
@@ -281,7 +288,7 @@ func buildDevWindows(data *Loaded, devIDs []config.DevIdentity, excludes, exclud
 	unknown := filterUnmapped(data, devIDs)
 	unknown = dropExcludedAuthors(unknown, excludes)
 	if hasAny(unknown) {
-		out = append(out, buildOneDev(unknown, unknownIdentity, start, end, fullStart, fullEnd, churn, ci, norm, iw))
+		out = append(out, buildOneDev(unknown, unknownIdentity, start, end, fullStart, fullEnd, churn, family, ci, norm, iw))
 	}
 	return out
 }
@@ -358,13 +365,13 @@ func dropExcludedAuthors(data *Loaded, patterns []string) *Loaded {
 	return out
 }
 
-func buildOneDev(data *Loaded, id config.DevIdentity, start, end, fullStart, fullEnd cache.Month, churn map[string]int, ci config.CodeImpactConfig, norm config.NormalizeConfig, iw prIntegrationWeight) DevWindowMetrics {
+func buildOneDev(data *Loaded, id config.DevIdentity, start, end, fullStart, fullEnd cache.Month, churn map[string]int, family map[string]float64, ci config.CodeImpactConfig, norm config.NormalizeConfig, iw prIntegrationWeight) DevWindowMetrics {
 	scoped := data
 	if len(id.AllGitHubLogins()) > 0 || id.JiraAccountID != "" {
 		scoped = filterForDev(data, id)
 	}
-	monthly := rollupMonthly(scoped, start, end, ci)
-	weekly := rollupWeekly(scoped, start, end, ci)
+	monthly := rollupMonthly(scoped, start, end, ci, norm)
+	weekly := rollupWeekly(scoped, start, end, ci, norm)
 	// B2: populate the per-row scored Jira-progress signal. rollupMonthly/Weekly
 	// can't — progress is actor-attributed via the changelog (needs id + full,
 	// unscoped data), not derivable from the dev-scoped issue rollup. Bucketed
@@ -396,12 +403,12 @@ func buildOneDev(data *Loaded, id config.DevIdentity, start, end, fullStart, ful
 	// Per Phase 6.2: code_impact uses the generated-file-dampened cardinality,
 	// not the raw count, so dependency dumps don't pad the substance score.
 	// Raw int cardinality stays on Totals.UniqueFilesTouched for display.
-	effFiles := effectiveUniqueFilesInWindow(scoped, start, end, norm, ci, iw)
+	effFiles := effectiveUniqueFilesInWindow(scoped, start, end, norm, ci, family, iw)
 	// effLOC equals LOCAdded+LOCDeleted when both code_impact knobs are off, so
 	// default behavior is unchanged; churn-weighting / bulk-import dampening only
 	// diverge it when explicitly enabled. effFiles/effLOC are also integration-
 	// down-weighted (via iw) when the feature is on.
-	effLOC := effectiveLOCInWindow(scoped, start, end, churn, ci, iw)
+	effLOC := effectiveLOCInWindow(scoped, start, end, churn, family, ci, norm, iw)
 	// Integration scoring (iw != nil): stash the down-weighted prs_*/loc inputs
 	// for computeContributorScores and use the down-weighted merged count for the
 	// γ·merged term of code_impact. When iw is nil, scored stays nil and the raw
@@ -417,7 +424,7 @@ func buildOneDev(data *Loaded, id config.DevIdentity, start, end, fullStart, ful
 	totals.CodeImpact = codeImpactFormula(effFiles, effLOC, mergedForImpact, ci)
 	var fullHistory []MonthlyRow
 	if fullStart.Before(start) || fullStart.Equal(start) {
-		fullHistory = rollupMonthly(scoped, fullStart, fullEnd, ci)
+		fullHistory = rollupMonthly(scoped, fullStart, fullEnd, ci, norm)
 		// progByMonth spans all of data (no window filter), so it covers the
 		// full-history months too.
 		for i := range fullHistory {

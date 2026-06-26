@@ -99,11 +99,13 @@ func globCore(glob string) string {
 // the union of file paths across every merged PR in [start, end]. Used as
 // the F input to code_impact at window scope. Mirrors uniqueFilesInWindow's
 // PR walk so the two stay in lock-step.
-func effectiveUniqueFilesInWindow(data *Loaded, start, end cache.Month, cfg config.NormalizeConfig, ci config.CodeImpactConfig, iw prIntegrationWeight) float64 {
+func effectiveUniqueFilesInWindow(data *Loaded, start, end cache.Month, cfg config.NormalizeConfig, ci config.CodeImpactConfig, family map[string]float64, iw prIntegrationWeight) float64 {
 	// Per-path weight: a file in a detected bulk-data dump contributes
 	// ci.DumpWeight, a generated-pattern file contributes GeneratedFileWeight,
+	// a redundant boilerplate-family copy is further scaled by FamilyWeight, and
 	// everything else 1.0. A path seen in multiple PRs keeps its least-dampened
 	// weight, so real work on a file isn't erased by an unrelated dump touching it.
+	familyOn := !ci.DisableBoilerplateDampening && len(family) > 0
 	weights := map[string]float64{}
 	for _, p := range data.PRs {
 		if p.Merged == nil || !monthInRange(monthKey(*p.Merged), start, end) {
@@ -116,10 +118,14 @@ func effectiveUniqueFilesInWindow(data *Loaded, start, end cache.Month, cfg conf
 		// solely through integration merges are dampened.
 		integ := iw.weightFor(p)
 		for _, f := range p.Files {
-			w := genFileWeight(f, cfg) * integ
+			base := genFileWeight(f, cfg)
 			if dump && isDumpDataExt(extLower(f)) {
-				w = ci.DumpWeight * integ
+				base = ci.DumpWeight
 			}
+			if familyOn {
+				base *= familyWeight(family, f)
+			}
+			w := base * integ
 			if cur, ok := weights[f]; !ok || w > cur {
 				weights[f] = w
 			}

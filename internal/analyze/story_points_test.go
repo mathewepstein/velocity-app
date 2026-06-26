@@ -45,7 +45,7 @@ func TestStoryPointsRollupCreditedAtResolution(t *testing.T) {
 
 	start := cache.MustParseMonth("2026-01")
 	end := cache.MustParseMonth("2026-04")
-	rows := rollupMonthly(data, start, end, testCI())
+	rows := rollupMonthly(data, start, end, testCI(), testNorm())
 
 	// rows[2] == 2026-03
 	if rows[2].Month != "2026-03" {

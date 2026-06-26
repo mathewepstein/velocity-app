@@ -60,7 +60,7 @@ func CohortForCurrentWindow(opts Options) ([]DevWindowMetrics, WindowMetrics, er
 	// Resolve the window exactly as Run does — on the self-filtered data — so
 	// the cohort's window bounds match the live dashboard.
 	selfData := selfFilter(data, opts.Profile)
-	curWin := currentWindow(selfData, current, length, ci)
+	curWin := currentWindow(selfData, current, length, ci, norm)
 	curStart, _ := cache.ParseMonth(curWin.Window.Start)
 	curEnd, _ := cache.ParseMonth(curWin.Window.End)
 

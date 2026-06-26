@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/mathewepstein/velocity/internal/cache"
@@ -54,6 +55,11 @@ type ScoreRecord struct {
 	ScoredAt      time.Time  `json:"scored_at"`
 	PostedToJira  bool       `json:"posted_to_jira"`
 	JiraPostedAt  *time.Time `json:"jira_posted_at,omitempty"`
+	// Disciplines is the set of FE/BE/DevOps disciplines the ticket's Jira labels
+	// place it in (empty/omitted == untagged). Populated only on the List path by
+	// reading the co-resident jira_labels table — it is not a stored column and is
+	// not set by Get/SaveAuto. Drives the scoring page's discipline filter.
+	Disciplines []Discipline `json:"disciplines,omitempty"`
 }
 
 // NewAutoRecord builds an auto-source ScoreRecord from a ticket's evidence and
@@ -352,7 +358,63 @@ func (s *ScoreStore) List(f ScoreFilter) ([]ScoreRecord, error) {
 		}
 		out = append(out, *rec)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := s.attachDisciplines(out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// attachDisciplines decorates each record with the FE/BE/DevOps disciplines its
+// ticket is labeled with (empty == untagged), via a single read of the
+// co-resident jira_labels table. [Disciplines] is authoritative for the
+// label→discipline mapping; the SQL prefilter is built from [DisciplineLabelKeys]
+// so the two can't drift. If the database has no jira_labels table (a scores-only
+// DB with no corpus), every row is left untagged rather than erroring.
+func (s *ScoreStore) attachDisciplines(recs []ScoreRecord) error {
+	if len(recs) == 0 {
+		return nil
+	}
+	var hasTable int
+	if err := s.db.QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='jira_labels'`,
+	).Scan(&hasTable); err != nil {
+		return err
+	}
+	if hasTable == 0 {
+		return nil
+	}
+	keys := DisciplineLabelKeys()
+	args := make([]any, len(keys))
+	for i, k := range keys {
+		args[i] = k
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",")
+	// DISTINCT collapses the (scope, month) cell duplication in jira_labels;
+	// the lower(value) IN (…) prefilter narrows to discipline-bearing labels only.
+	q := `SELECT DISTINCT issue_key, value FROM jira_labels WHERE lower(value) IN (` + placeholders + `)`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	labelsByKey := make(map[string][]string)
+	for rows.Next() {
+		var key, val string
+		if err := rows.Scan(&key, &val); err != nil {
+			return err
+		}
+		labelsByKey[key] = append(labelsByKey[key], val)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range recs {
+		recs[i].Disciplines = Disciplines(labelsByKey[recs[i].Ticket])
+	}
+	return nil
 }
 
 const selectCols = `SELECT ticket, scorer, points, source, auto_points, existing_story_points,

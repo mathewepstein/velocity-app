@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -137,6 +138,46 @@ func (c *Client) FetchIssueFields(ctx context.Context, key string) (map[string]i
 	return resp.Fields, nil
 }
 
+// EditableField is one field that is settable on an issue, per its editmeta.
+type EditableField struct {
+	Name   string
+	Custom string // schema.custom type, when present
+}
+
+type editMetaResponse struct {
+	Fields map[string]struct {
+		Name   string `json:"name"`
+		Schema struct {
+			Custom string `json:"custom"`
+		} `json:"schema"`
+		Operations []string `json:"operations"`
+	} `json:"fields"`
+}
+
+// FetchEditMeta returns the fields settable on an issue (those whose editmeta
+// operations include "set"), keyed by field ID. Presence here means Jira will
+// accept a write to the field for that issue's project + issue type — the exact
+// thing the global /field catalog cannot tell us and the reason a name-matched
+// story-points field can 400 on write.
+func (c *Client) FetchEditMeta(ctx context.Context, key string) (map[string]EditableField, error) {
+	b, err := c.do(ctx, http.MethodGet, "/rest/api/3/issue/"+url.PathEscape(key)+"/editmeta", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp editMetaResponse
+	if err := json.Unmarshal(b, &resp); err != nil {
+		return nil, fmt.Errorf("parse editmeta %s: %w", key, err)
+	}
+	out := make(map[string]EditableField, len(resp.Fields))
+	for id, f := range resp.Fields {
+		if !slices.Contains(f.Operations, "set") {
+			continue
+		}
+		out[id] = EditableField{Name: f.Name, Custom: f.Schema.Custom}
+	}
+	return out, nil
+}
+
 // Discover runs the full read-only wizard: catalog → sample keys → per-issue
 // fields → report. sleep spaces the per-issue GETs to stay polite (0 = none).
 func (c *Client) Discover(ctx context.Context, projects []string, sample int, sleep time.Duration) (*Report, error) {
@@ -152,12 +193,24 @@ func (c *Client) Discover(ctx context.Context, projects []string, sample int, sl
 		return nil, fmt.Errorf("no issues found for project(s) %s", strings.Join(projects, ", "))
 	}
 	issues := make([]map[string]interface{}, 0, len(keys))
+	settable := map[string]SettableField{}
 	for i, k := range keys {
 		f, err := c.FetchIssueFields(ctx, k)
 		if err != nil {
 			return nil, err
 		}
 		issues = append(issues, f)
+		// editmeta is best-effort: a per-issue failure (e.g. the token can't read
+		// this issue's editmeta) reduces settability evidence but must not abort
+		// the wizard — story_points then falls back to the catalog name match.
+		if em, err := c.FetchEditMeta(ctx, k); err == nil {
+			for id, ef := range em {
+				sf := settable[id]
+				sf.Name, sf.Custom = ef.Name, ef.Custom
+				sf.Count++
+				settable[id] = sf
+			}
+		}
 		if sleep > 0 && i < len(keys)-1 {
 			select {
 			case <-ctx.Done():
@@ -168,7 +221,7 @@ func (c *Client) Discover(ctx context.Context, projects []string, sample int, sl
 	}
 	// Keys come back updated-desc; sort for stable, readable output.
 	sort.Strings(keys)
-	return buildReport(catalog, keys, issues), nil
+	return buildReport(catalog, keys, issues, settable), nil
 }
 
 func truncate(b []byte, n int) string {

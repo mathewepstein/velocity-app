@@ -32,6 +32,7 @@
       sp:         'any',   // any | has | none  (existing Jira story points)
       source:     'any',   // any | auto | human
       date:       'all',   // all | 3m | 6m | 12m | ytd  (resolved date window)
+      discipline: 'all',   // all | FE | BE | DevOps | untagged  (from Jira labels)
     },
     search:       '',            // ticket-key substring filter (lower-cased)
     selected:     null,          // ticket key whose detail is open
@@ -53,6 +54,14 @@
       if (f.sp === 'has' && !(r.existing_story_points > 0)) return false;
       if (f.sp === 'none' && r.existing_story_points > 0) return false;
       if (f.source !== 'any' && r.source !== f.source) return false;
+      if (f.discipline !== 'all') {
+        // r.disciplines is the ticket's FE/BE/DevOps membership (omitted == untagged).
+        // A ticket can belong to more than one discipline, so the filter matches on
+        // set membership; 'untagged' matches rows with no discipline at all.
+        const d = r.disciplines || [];
+        if (f.discipline === 'untagged') { if (d.length) return false; }
+        else if (!d.includes(f.discipline)) return false;
+      }
       if (f.date !== 'all') {
         // Filter on the ticket's resolved date, falling back to created for an
         // open ticket. Undated rows (scored before the date columns existed, or
@@ -591,6 +600,25 @@
     const label = document.createElement('div');
     label.className = 'detail-field-label';
     label.textContent = 'Override & post';
+    wrap.append(label);
+
+    // Posted indicator: mirror the list-view "Posted" tag here in the post area
+    // so it's obvious this score is already on the Jira ticket (with when), not
+    // just a band waiting to be sent.
+    const alreadyPosted = !!(persisted && persisted.posted_to_jira);
+    if (alreadyPosted) {
+      const status = document.createElement('div');
+      status.className = 'detail-posted';
+      status.appendChild(badge('Posted', 'posted-badge'));
+      const when = document.createElement('span');
+      when.className = 'detail-posted-when';
+      when.textContent = persisted.jira_posted_at
+        ? `Posted to Jira · ${new Date(persisted.jira_posted_at).toLocaleString()}`
+        : 'Posted to Jira';
+      status.appendChild(when);
+      wrap.append(status);
+    }
+
     const row = document.createElement('div');
     row.className = 'override-row';
     // A dropdown of the configured scale steps — overrides must land on-scale
@@ -657,7 +685,7 @@
     });
 
     row.append(input, postBtn, note);
-    wrap.append(label, row);
+    wrap.append(row);
     return wrap;
   }
 

@@ -68,7 +68,7 @@ func TestBuildReport_DescriptionPicksMostPopulatedCustom(t *testing.T) {
 		{"customfield_11140": "real", "customfield_11102": float64(5)},
 		{"customfield_11140": "real"},
 	}
-	rep := buildReport(testCatalog(), []string{"CD-1", "CD-2", "CD-3"}, issues)
+	rep := buildReport(testCatalog(), []string{"CD-1", "CD-2", "CD-3"}, issues, nil)
 
 	desc := proposalFor(rep, "description")
 	if desc == nil {
@@ -83,10 +83,17 @@ func TestBuildReport_StoryPointsAndEpicFallback(t *testing.T) {
 	issues := []map[string]interface{}{
 		{"customfield_11102": float64(8)},
 	}
-	rep := buildReport(testCatalog(), []string{"CD-1"}, issues)
+	settable := map[string]SettableField{
+		"customfield_11102": {Name: "Story point estimate", Count: 1},
+	}
+	rep := buildReport(testCatalog(), []string{"CD-1"}, issues, settable)
 
-	if sp := proposalFor(rep, "story_points"); sp == nil || sp.FieldID != "customfield_11102" {
+	sp := proposalFor(rep, "story_points")
+	if sp == nil || sp.FieldID != "customfield_11102" {
 		t.Errorf("story_points proposal = %+v, want customfield_11102", sp)
+	}
+	if sp != nil && sp.Warning != "" {
+		t.Errorf("settable story_points should carry no warning, got %q", sp.Warning)
 	}
 	// No custom "Epic Link" field in the catalog → must fall back to parent.
 	if el := proposalFor(rep, "epic_link"); el == nil || el.FieldID != "parent" {
@@ -95,16 +102,51 @@ func TestBuildReport_StoryPointsAndEpicFallback(t *testing.T) {
 }
 
 func TestBuildReport_StoryPointsProposedEvenWhenUnpopulated(t *testing.T) {
-	// The story-points field exists in the catalog but is empty on every sampled
-	// (recent/open) ticket. It must still be proposed — matched via the catalog,
-	// not the population stats. Regression for the live smoke-test gap.
+	// The story-points field is empty on every sampled (recent/open) ticket but is
+	// settable on the edit screen. It must still be proposed — driven by editmeta
+	// settability, not the population stats. Regression for the live smoke-test gap.
 	issues := []map[string]interface{}{
 		{"customfield_11140": "desc only"},
 	}
-	rep := buildReport(testCatalog(), []string{"CD-1"}, issues)
+	settable := map[string]SettableField{
+		"customfield_11102": {Name: "Story point estimate", Count: 1},
+	}
+	rep := buildReport(testCatalog(), []string{"CD-1"}, issues, settable)
 	sp := proposalFor(rep, "story_points")
 	if sp == nil || sp.FieldID != "customfield_11102" {
-		t.Fatalf("story_points proposal = %+v, want customfield_11102 from catalog", sp)
+		t.Fatalf("story_points proposal = %+v, want customfield_11102", sp)
+	}
+}
+
+func TestBuildReport_StoryPointsPrefersSettableOverNameMatch(t *testing.T) {
+	// Two story-points-named fields exist instance-wide: a company-managed "Story
+	// Points" (customfield_10128) and a team-managed "Story point estimate"
+	// (customfield_11102). Only the latter is on these issues' edit screen. The
+	// proposal must pick the settable one — picking 10128 by name is exactly the
+	// bug that 400s at write time.
+	catalog := append(testCatalog(), FieldMeta{ID: "customfield_10128", Name: "Story Points", Custom: true})
+	issues := []map[string]interface{}{{"customfield_11140": "x"}}
+	settable := map[string]SettableField{
+		"customfield_11102": {Name: "Story point estimate", Count: 2},
+	}
+	rep := buildReport(catalog, []string{"CD-1", "CD-2"}, issues, settable)
+	sp := proposalFor(rep, "story_points")
+	if sp == nil || sp.FieldID != "customfield_11102" {
+		t.Fatalf("story_points proposal = %+v, want settable customfield_11102 (not name-matched 10128)", sp)
+	}
+	if sp.Warning != "" {
+		t.Errorf("settable proposal should carry no warning, got %q", sp.Warning)
+	}
+
+	// With no editmeta gathered at all, it falls back to the catalog name match
+	// but must flag a warning so the operator verifies before writing.
+	repNoEM := buildReport(catalog, []string{"CD-1"}, issues, nil)
+	spNoEM := proposalFor(repNoEM, "story_points")
+	if spNoEM == nil {
+		t.Fatal("expected a fallback story_points proposal with no editmeta")
+	}
+	if spNoEM.Warning == "" {
+		t.Error("name-only fallback story_points proposal must carry a warning")
 	}
 }
 
@@ -116,7 +158,7 @@ func TestBuildReport_NoiseDenylistedAndExtraBucketed(t *testing.T) {
 			"labels":            []interface{}{"BE"},                                            // standard, not custom → neither
 		},
 	}
-	rep := buildReport(testCatalog(), []string{"CD-1"}, issues)
+	rep := buildReport(testCatalog(), []string{"CD-1"}, issues, nil)
 
 	if !containsID(rep.Extra, "customfield_10126") {
 		t.Error("Flagged should be bucketed into Extra (capture-worthy custom field)")
@@ -134,7 +176,7 @@ func TestBuildReport_StatsSortedAndCounted(t *testing.T) {
 		{"customfield_11140": "a", "labels": []interface{}{"x"}},
 		{"customfield_11140": "b"},
 	}
-	rep := buildReport(testCatalog(), []string{"CD-1", "CD-2"}, issues)
+	rep := buildReport(testCatalog(), []string{"CD-1", "CD-2"}, issues, nil)
 	if len(rep.Stats) == 0 || rep.Stats[0].ID != "customfield_11140" {
 		t.Fatalf("expected most-populated field first, got %+v", rep.Stats)
 	}

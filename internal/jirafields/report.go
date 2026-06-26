@@ -33,6 +33,22 @@ type Proposal struct {
 	FieldID   string `json:"field_id"`
 	FieldName string `json:"field_name"`
 	Reason    string `json:"reason"`
+	// Warning, when non-empty, flags a proposal the operator must verify before
+	// trusting — e.g. a story_points field matched only by catalog name that is
+	// not settable on any sampled issue's edit screen (writing to it would 400).
+	Warning string `json:"warning,omitempty"`
+}
+
+// SettableField summarizes a field's editmeta presence across the sampled
+// issues: whether Jira will accept a write to it (it is on the edit screen) and
+// on how many samples. The wizard uses this so a written mapping (story_points)
+// is a field you can actually set — not merely one that exists in the global
+// /field catalog, which can pick an ID that 400s at write time because it is not
+// on the relevant project/issue-type's edit screen.
+type SettableField struct {
+	Name   string // editmeta display name
+	Custom string // schema.custom type, when present
+	Count  int    // # sampled issues where the field is settable (has a "set" op)
 }
 
 // Report is the wizard's read-only output: per-field population evidence,
@@ -65,7 +81,7 @@ var noiseKeywords = []string{
 // maps of the sampled issues, it tallies population, proposes the consumer-
 // backed mappings, and buckets the remaining populated custom fields. No I/O —
 // directly unit-testable.
-func buildReport(catalog []FieldMeta, keys []string, issues []map[string]interface{}) *Report {
+func buildReport(catalog []FieldMeta, keys []string, issues []map[string]interface{}, settable map[string]SettableField) *Report {
 	byID := make(map[string]FieldMeta, len(catalog))
 	for _, m := range catalog {
 		byID[m.ID] = m
@@ -112,7 +128,7 @@ func buildReport(catalog []FieldMeta, keys []string, issues []map[string]interfa
 		Keys:           keys,
 		Stats:          stats,
 	}
-	rep.Proposed = proposeMappings(catalog, stats)
+	rep.Proposed = proposeMappings(catalog, stats, settable)
 
 	// Bucket the remaining populated custom fields (excluding any chosen as a
 	// proposal) into capture-worthy vs. denylisted noise.
@@ -137,13 +153,18 @@ func buildReport(catalog []FieldMeta, keys []string, issues []map[string]interfa
 // story_points, epic_link, and description have engine consumers today; nothing
 // else is proposed as a named mapping.
 //
-// story_points and epic_link are matched against the field CATALOG by name —
-// these fields are routinely empty on recent/open tickets, so a population-only
-// match would miss them in a small sample. description is matched by population
-// among description-named fields, because that is exactly the signal that
-// distinguishes a sparse standard `description` from the custom field actually
-// in use.
-func proposeMappings(catalog []FieldMeta, stats []FieldStat) []Proposal {
+// story_points is the only WRITTEN signal, so it is matched settability-first:
+// among the fields actually settable on the sampled issues (editmeta), pick the
+// story-points-named one settable on the most samples. This is what makes the
+// mapping correctly org- and screen-specific — matching the global /field
+// catalog by name alone can pick an ID that exists instance-wide but is not on
+// the relevant project/issue-type's edit screen, which then 400s at write time.
+// When no settable candidate exists (e.g. the token can't read editmeta), it
+// falls back to the catalog name match but flags a Warning. epic_link is matched
+// against the catalog by name — it is read, never written, so settability is
+// irrelevant and these fields are routinely empty on recent tickets. description
+// is matched by population among description-named fields.
+func proposeMappings(catalog []FieldMeta, stats []FieldStat, settable map[string]SettableField) []Proposal {
 	var out []Proposal
 	pop := map[string]int{}
 	sampled := 0
@@ -152,13 +173,17 @@ func proposeMappings(catalog []FieldMeta, stats []FieldStat) []Proposal {
 		sampled = s.Sampled
 	}
 
-	// story_points: catalog field named "story points" / "story point estimate".
-	if m, ok := catalogByName(catalog, func(n string) bool {
-		return n == "story points" || n == "story point estimate"
-	}); ok {
+	// story_points: prefer a field that is settable on the sampled issues.
+	if id, sf, ok := pickSettableByName(settable, isStoryPointsName); ok {
+		out = append(out, Proposal{
+			Canonical: "story_points", FieldID: id, FieldName: sf.Name,
+			Reason: fmt.Sprintf("settable on %d/%d sampled issues (on the edit screen), populated on %d/%d", sf.Count, sampled, pop[id], sampled),
+		})
+	} else if m, ok := catalogByName(catalog, isStoryPointsName); ok {
 		out = append(out, Proposal{
 			Canonical: "story_points", FieldID: m.ID, FieldName: m.Name,
-			Reason: fmt.Sprintf("catalog field %q, populated on %d/%d sampled", m.Name, pop[m.ID], sampled),
+			Reason:  fmt.Sprintf("catalog field %q, populated on %d/%d sampled", m.Name, pop[m.ID], sampled),
+			Warning: "matched by catalog name but not settable on any sampled issue — it may not be on the edit screen for these projects/issue types, so writes can fail with a 400; verify before use",
 		})
 	}
 
@@ -196,6 +221,32 @@ func proposeMappings(catalog []FieldMeta, stats []FieldStat) []Proposal {
 		})
 	}
 	return out
+}
+
+// isStoryPointsName matches the two standard story-points field names (company-
+// managed "Story Points" and team-managed "Story point estimate").
+func isStoryPointsName(n string) bool {
+	return n == "story points" || n == "story point estimate"
+}
+
+// pickSettableByName returns the settable field whose name satisfies match,
+// choosing the one settable on the most sampled issues (tie → name asc for
+// stable output). ok is false when none match — e.g. no editmeta was gathered.
+func pickSettableByName(settable map[string]SettableField, match func(name string) bool) (string, SettableField, bool) {
+	bestID := ""
+	var best SettableField
+	for id, sf := range settable {
+		if !match(strings.ToLower(strings.TrimSpace(sf.Name))) {
+			continue
+		}
+		if bestID == "" || sf.Count > best.Count || (sf.Count == best.Count && sf.Name < best.Name) {
+			bestID, best = id, sf
+		}
+	}
+	if bestID == "" {
+		return "", SettableField{}, false
+	}
+	return bestID, best, true
 }
 
 // catalogByName returns the first catalog field whose lowercased, trimmed name

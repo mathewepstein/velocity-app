@@ -102,6 +102,9 @@ func printFieldReport(cmd *cobra.Command, rep *jirafields.Report) {
 	fmt.Fprintln(w, "[profiles.default.jira.fields]")
 	for _, p := range rep.Proposed {
 		fmt.Fprintf(w, "%-13s = %-20q # %s\n", p.Canonical, p.FieldID, p.Reason)
+		if p.Warning != "" {
+			fmt.Fprintf(w, "%-13s   %-20s # ⚠ %s\n", "", "", p.Warning)
+		}
 	}
 
 	if len(rep.Extra) > 0 {

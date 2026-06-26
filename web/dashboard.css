@@ -1845,6 +1845,16 @@ footer {
   padding-top: 14px;
   border-top: 1px solid var(--panel-border);
 }
+.detail-posted {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.detail-posted-when {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
 .copy-row {
   display: flex;
   align-items: stretch;
